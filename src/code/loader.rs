@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::collections::HashMap;
 use anyhow::Result;
 
 use super::types::{CodeGraph, MethodNode, CallEdge};
@@ -92,7 +93,7 @@ pub fn load_routes(source_dir: &str) -> Result<RouteTable> {
     Ok(table)
 }
 
-fn collect_cs_files(dir: &Path, files: &mut Vec<String>) {
+pub fn collect_cs_files(dir: &Path, files: &mut Vec<String>) {
     if dir.is_file() {
         if dir.extension().map(|e| e == "cs").unwrap_or(false) {
             files.push(dir.to_string_lossy().to_string());
@@ -109,6 +110,61 @@ fn collect_cs_files(dir: &Path, files: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// Load multiple C# project directories and merge them into a single CodeGraph.
+/// Each directory is expected to contain a separate service (e.g., Catalog.API, Ordering.API).
+/// Service names can be optionally mapped via a HashMap (dir → service_name).
+pub fn load_multi_project(dirs: &[&str], service_names: &HashMap<String, String>) -> Result<CodeGraph> {
+    let mut merged = CodeGraph::new();
+    for dir in dirs {
+        let cg = load_project(dir)?;
+        let svc_name = service_names.get(*dir).cloned().unwrap_or_else(|| {
+            Path::new(dir).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+        });
+        for mut m in cg.methods {
+            m.service = Some(svc_name.clone());
+            merged.add_method(m);
+        }
+        for c in cg.calls {
+            if !merged.calls.iter().any(|ec| ec.source_class == c.source_class
+                && ec.source_method == c.source_method
+                && ec.target_class == c.target_class
+                && ec.target_method == c.target_method)
+            {
+                merged.calls.push(c);
+            }
+        }
+        for cls in cg.classes {
+            if !merged.classes.contains(&cls) {
+                merged.classes.push(cls);
+            }
+        }
+        for iface in cg.interfaces {
+            if !merged.interfaces.contains(&iface) {
+                merged.interfaces.push(iface);
+            }
+        }
+    }
+    Ok(merged)
+}
+
+/// Load routes from multiple C# project directories, merged into one RouteTable
+pub fn load_multi_routes(dirs: &[&str]) -> Result<RouteTable> {
+    let mut merged = RouteTable::new();
+    for dir in dirs {
+        let table = load_routes(dir)?;
+        for entry in table.entries {
+            if !merged.entries.iter().any(|e| e.http_method == entry.http_method
+                && e.route_pattern == entry.route_pattern
+                && e.class == entry.class
+                && e.method == entry.method)
+            {
+                merged.entries.push(entry);
+            }
+        }
+    }
+    Ok(merged)
 }
 
 #[cfg(test)]

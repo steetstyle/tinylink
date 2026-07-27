@@ -31,24 +31,56 @@ fn map_endpoint(
 
     if !path.is_empty() {
         if let Some(entry) = route_table.match_best(http_method, path) {
-            return Some(format!("{}.{}", entry.class, entry.method));
+            if !is_registration_method(&entry.method) {
+                return Some(format!("{}.{}", entry.class, entry.method));
+            }
         }
     }
 
-    // Fallback: search method names that contain endpoint keywords
-    let path_lower = endpoint.to_lowercase();
+    // gRPC endpoint: "POST /service/Method" → try class.Method directly
+    if let Some(grpc) = try_grpc_method(endpoint, code_graph) {
+        return Some(grpc);
+    }
+
+    // Fallback: keyword match last path segment against method name (same service only)
+    let last_segment = path.rsplit('/').next().unwrap_or("").to_lowercase();
+    let svc_lower = service.to_lowercase();
     for m in &code_graph.methods {
+        if !is_handler_class(&m.class) {
+            continue;
+        }
+        if m.class == m.method {
+            continue;
+        }
+        if is_registration_method(&m.method) {
+            continue;
+        }
+        if !method_belongs_to_service(m, &svc_lower) {
+            continue;
+        }
         let method_lower = m.method.to_lowercase();
-        if method_lower.contains(&path_lower)
-            || path_lower.contains(&method_lower)
-        {
+        if last_segment.len() > 2 && (method_lower.contains(&last_segment) || last_segment.contains(&method_lower)) {
             return Some(format!("{}.{}", m.class, m.method));
         }
+    }
 
-        // Match service name against class name
+    // Last resort: match service name against class name
+    for m in &code_graph.methods {
+        if !is_handler_class(&m.class) {
+            continue;
+        }
+        if m.class == m.method {
+            continue;
+        }
+        if is_registration_method(&m.method) {
+            continue;
+        }
+        if !method_belongs_to_service(m, &svc_lower) {
+            continue;
+        }
         let class_lower = m.class.to_lowercase();
-        let svc_lower = service.to_lowercase();
         if class_lower.contains(&svc_lower) || svc_lower.contains(&class_lower) {
+            let method_lower = m.method.to_lowercase();
             if method_lower.contains("get")
                 || method_lower.contains("post")
                 || method_lower.contains("handle")
@@ -58,6 +90,61 @@ fn map_endpoint(
         }
     }
 
+    None
+}
+
+fn is_handler_class(class: &str) -> bool {
+    let lower = class.to_lowercase();
+    lower.ends_with("controller")
+        || lower.ends_with("api")
+        || lower.ends_with("service")
+        || lower.ends_with("handler")
+        || lower.ends_with("endpoint")
+        || lower.contains("eventhandler")
+}
+
+/// Check if a method node belongs to the given SDG service name
+fn method_belongs_to_service(m: &crate::code::types::MethodNode, svc_lower: &str) -> bool {
+    m.service.as_ref().map_or(false, |s| {
+        let s_lower = s.to_lowercase();
+        s_lower.contains(svc_lower) || svc_lower.contains(&s_lower)
+    })
+}
+
+fn is_registration_method(method: &str) -> bool {
+    let lower = method.to_lowercase();
+    lower.starts_with("map") || lower.starts_with("register") || lower.starts_with("configure")
+}
+
+fn try_grpc_method(endpoint: &str, code_graph: &CodeGraph) -> Option<String> {
+    // gRPC endpoint format: "POST /package.Service/Method" or just "/Service/Method"
+    let path = endpoint.split(' ').nth(1).unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    // Extract the last two parts: Service/Method
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let grpc_method = parts[parts.len() - 1];
+    let grpc_service = parts[parts.len() - 2];
+
+    // Try exact match: class name contains the gRPC service name, method contains the gRPC method
+    for m in &code_graph.methods {
+        if m.class == m.method {
+            continue;
+        }
+        let class_lower = m.class.to_lowercase();
+        let svc_lower = grpc_service.to_lowercase();
+        if class_lower.contains(&svc_lower) || svc_lower.contains(&class_lower) {
+            let method_lower = m.method.to_lowercase();
+            let mtd_lower = grpc_method.to_lowercase();
+            if method_lower.contains(&mtd_lower) || mtd_lower.contains(&method_lower) {
+                return Some(format!("{}.{}", m.class, m.method));
+            }
+        }
+    }
     None
 }
 

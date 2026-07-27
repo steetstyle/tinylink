@@ -18,7 +18,33 @@ pub struct ServiceEdge {
     pub call_count: usize,
     pub error_count: usize,
     pub avg_latency_ms: f64,
+    pub latency_p50_ms: f64,
+    pub latency_p95_ms: f64,
+    pub latency_p99_ms: f64,
     pub trace_ids: Vec<String>,
+    #[serde(skip)]
+    pub latency_samples: Vec<f64>,
+}
+
+impl ServiceEdge {
+    /// Recompute P50/P95/P99 from stored latency_samples.
+    pub fn compute_percentiles(&mut self) {
+        if self.latency_samples.is_empty() {
+            self.latency_p50_ms = self.avg_latency_ms;
+            self.latency_p95_ms = self.avg_latency_ms;
+            self.latency_p99_ms = self.avg_latency_ms;
+            return;
+        }
+        let mut sorted = self.latency_samples.clone();
+        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        let idx50 = ((n as f64 * 0.50) as usize).min(n - 1);
+        let idx95 = ((n as f64 * 0.95) as usize).min(n - 1);
+        let idx99 = ((n as f64 * 0.99) as usize).min(n - 1);
+        self.latency_p50_ms = sorted[idx50];
+        self.latency_p95_ms = sorted[idx95];
+        self.latency_p99_ms = sorted[idx99];
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,11 +108,13 @@ impl ServiceGraph {
             }
             edge.avg_latency_ms = (edge.avg_latency_ms * (edge.call_count - 1) as f64 + latency_ms)
                 / edge.call_count as f64;
+            edge.latency_samples.push(latency_ms);
+            edge.compute_percentiles();
             if !edge.trace_ids.contains(&trace_id.to_string()) {
                 edge.trace_ids.push(trace_id.to_string());
             }
         } else {
-            self.edges.push(ServiceEdge {
+            let mut edge = ServiceEdge {
                 source: source.to_string(),
                 target: target.to_string(),
                 source_endpoint: source_endpoint.to_string(),
@@ -94,8 +122,14 @@ impl ServiceGraph {
                 call_count: 1,
                 error_count: if error { 1 } else { 0 },
                 avg_latency_ms: latency_ms,
+                latency_p50_ms: latency_ms,
+                latency_p95_ms: latency_ms,
+                latency_p99_ms: latency_ms,
                 trace_ids: vec![trace_id.to_string()],
-            });
+                latency_samples: vec![latency_ms],
+            };
+            edge.compute_percentiles();
+            self.edges.push(edge);
         }
 
         if error {
@@ -124,7 +158,10 @@ impl ServiceGraph {
                 }
             }
         }
-        self.edges.extend(other.edges);
+        for mut e in other.edges {
+            e.compute_percentiles();
+            self.edges.push(e);
+        }
         self.total_traces += other.total_traces;
         self.error_traces += other.error_traces;
     }
@@ -132,20 +169,29 @@ impl ServiceGraph {
     pub fn to_dot(&self) -> String {
         let mut dot = String::from("digraph SDG {\n  rankdir=LR;\n  node [shape=box style=rounded];\n\n");
         for (name, node) in &self.nodes {
-            let label = if node.error_count > 0 {
-                format!("{} [color=red label=\"{}\\nerrors: {}\"]", name, name, node.error_count)
+            let color = if node.error_count > 0 { "color=red penwidth=2" } else { "" };
+            let extra = if node.error_count > 0 {
+                format!("\\nerrors: {}", node.error_count)
             } else {
-                format!("{} [label=\"{}\"]", name, name)
+                String::new()
             };
-            dot.push_str(&format!("  {};\n", label));
+            dot.push_str(&format!("  {} [label=\"{}{}\" {}];\n", name, name, extra, color));
         }
         dot.push_str("\n");
         for edge in &self.edges {
-            let color = if edge.error_count > 0 { "color=red" } else { "color=blue" };
-            let label = format!("{} -> {} [{} label=\"{}\\ncalls: {} errors: {} {:.0}ms\"]",
+            let color = if edge.error_count > 0 { "color=red penwidth=2" } else { "color=blue" };
+            let err_info = if edge.error_count > 0 {
+                format!(" ERRORS:{}", edge.error_count)
+            } else {
+                String::new()
+            };
+            dot.push_str(&format!(
+                "  {} -> {} [{} label=\"{}\\ncalls:{}{} avg:{:.0}ms P50:{:.0} P95:{:.0} P99:{:.0}\"];\n",
                 edge.source, edge.target, color, edge.target_endpoint,
-                edge.call_count, edge.error_count, edge.avg_latency_ms);
-            dot.push_str(&format!("  {};\n", label));
+                edge.call_count, err_info,
+                edge.avg_latency_ms, edge.latency_p50_ms,
+                edge.latency_p95_ms, edge.latency_p99_ms,
+            ));
         }
         dot.push_str("}\n");
         dot
@@ -234,5 +280,28 @@ mod tests {
         g.add_edge("A", "B", "ep1", "ep2", false, 100.0, "t1");
         let dot = g.to_dot();
         assert!(!dot.contains("color=red"));
+    }
+
+    #[test]
+    fn test_latency_percentiles() {
+        let mut g = ServiceGraph::new();
+        g.add_edge("A", "B", "ep1", "ep2", false, 10.0, "t1");
+        g.add_edge("A", "B", "ep1", "ep2", false, 20.0, "t2");
+        g.add_edge("A", "B", "ep1", "ep2", false, 30.0, "t3");
+        g.add_edge("A", "B", "ep1", "ep2", false, 100.0, "t4");
+        let e = &g.edges[0];
+        assert!((e.latency_p50_ms - 30.0).abs() < 1.0);
+        assert!((e.latency_p95_ms - 100.0).abs() < 1.0);
+        assert!((e.latency_p99_ms - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_dot_shows_latency_percentiles() {
+        let mut g = ServiceGraph::new();
+        g.add_edge("A", "B", "ep1", "ep2", false, 150.0, "t1");
+        let dot = g.to_dot();
+        assert!(dot.contains("P50:"));
+        assert!(dot.contains("P95:"));
+        assert!(dot.contains("P99:"));
     }
 }
