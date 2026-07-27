@@ -1,0 +1,139 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "Gateway"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "multi1",
+              "spanId": "mg1",
+              "parentSpanId": "",
+              "name": "GET /api/search",
+              "kind": 2,
+              "startTimeUnixNano": 0,
+              "endTimeUnixNano": 300000000
+            },
+            {
+              "traceId": "multi1",
+              "spanId": "mg2",
+              "parentSpanId": "mg1",
+              "name": "GET /api/search",
+              "kind": 3,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.target", "value": {"stringValue": "/api/search"}}
+              ],
+              "startTimeUnixNano": 50000000,
+              "endTimeUnixNano": 250000000
+            },
+            {
+              "traceId": "multi1",
+              "spanId": "mg3",
+              "parentSpanId": "mg2",
+              "name": "GET /api/catalog/items",
+              "kind": 3,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.target", "value": {"stringValue": "/api/catalog/items"}}
+              ],
+              "startTimeUnixNano": 100000000,
+              "endTimeUnixNano": 200000000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "SearchAPI"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "multi1",
+              "spanId": "ms1",
+              "parentSpanId": "mg2",
+              "name": "POST /search/index",
+              "kind": 2,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "POST"}},
+                {"key": "http.route", "value": {"stringValue": "/search/index"}}
+              ],
+              "startTimeUnixNano": 150000000,
+              "endTimeUnixNano": 250000000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "CatalogAPI"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "multi1",
+              "spanId": "mc1",
+              "parentSpanId": "mg3",
+              "name": "POST /validate",
+              "kind": 2,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "POST"}},
+                {"key": "http.route", "value": {"stringValue": "/validate"}}
+              ],
+              "startTimeUnixNano": 200000000,
+              "endTimeUnixNano": 250000000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "OrderingAPI"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "multi2",
+              "spanId": "mo1",
+              "parentSpanId": "",
+              "name": "GET /api/orders",
+              "kind": 2,
+              "startTimeUnixNano": 0,
+              "endTimeUnixNano": 100000000
+            },
+            {
+              "traceId": "multi2",
+              "spanId": "mo2",
+              "parentSpanId": "mo1",
+              "name": "GET /api/orders",
+              "kind": 3,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.target", "value": {"stringValue": "/api/orders"}}
+              ],
+              "startTimeUnixNano": 10000000,
+              "endTimeUnixNano": 90000000
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

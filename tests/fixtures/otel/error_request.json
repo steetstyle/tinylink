@@ -1,0 +1,67 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "Frontend"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "err001",
+              "spanId": "s1",
+              "parentSpanId": "",
+              "name": "GET /api/orders",
+              "kind": 2,
+              "startTimeUnixNano": 0,
+              "endTimeUnixNano": 500000000
+            },
+            {
+              "traceId": "err001",
+              "spanId": "s2",
+              "parentSpanId": "s1",
+              "name": "GET /api/orders",
+              "kind": 3,
+              "status": {"code": 2},
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.target", "value": {"stringValue": "/api/orders"}}
+              ],
+              "startTimeUnixNano": 100000000,
+              "endTimeUnixNano": 450000000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "OrdersAPI"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "err001",
+              "spanId": "s3",
+              "parentSpanId": "s2",
+              "name": "GET /api/orders/timeout",
+              "kind": 2,
+              "status": {"code": 2},
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.route", "value": {"stringValue": "/api/orders/timeout"}}
+              ],
+              "startTimeUnixNano": 200000000,
+              "endTimeUnixNano": 400000000
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

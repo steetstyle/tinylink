@@ -1,0 +1,37 @@
+[package]
+name = "tinylink"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "SDG + PDG unification bridge — links OpenTelemetry service graphs to code-level dependence graphs"
+
+[dependencies]
+tiny-pdg-cs = { git = "https://github.com/steetstyle/tinypdg-cs.git" }
+petgraph = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+pretty_assertions = "1"
+
+[features]
+default = ["online"]
+online = ["reqwest", "tokio"]
+
+[[bench]]
+name = "bench_sdg"
+path = "benches/bench_sdg.rs"
+harness = false
+
+[[bench]]
+name = "bench_link"
+path = "benches/bench_link.rs"
+harness = false

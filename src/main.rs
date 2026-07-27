@@ -1,0 +1,101 @@
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "tinylink", about = "SDG + PDG unification bridge")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Build service dependency graph from OTLP trace data
+    Sdg {
+        #[arg(help = "Path to OTLP JSON trace file")]
+        trace: String,
+        #[arg(long, help = "Output format: json, dot")]
+        format: Option<String>,
+        #[arg(long, help = "Show service metrics (error count, latency)")]
+        stats: bool,
+    },
+    /// Analyze C# source code and extract code graph via tiny-pdg-cs
+    Code {
+        #[arg(help = "Path to C# project directory")]
+        source: String,
+        #[arg(long, help = "Filter by service name")]
+        service: Option<String>,
+        #[arg(long, help = "Output format: json, dot")]
+        format: Option<String>,
+    },
+    /// Unify SDG and code graph into a single graph
+    Link {
+        #[arg(help = "Path to OTLP JSON trace file")]
+        trace: String,
+        #[arg(help = "Path to C# project directory")]
+        source: String,
+        #[arg(long, help = "Output format: json, dot")]
+        format: Option<String>,
+    },
+    /// Trace a single request through services and code
+    Tracepath {
+        #[arg(help = "Path to OTLP JSON trace file")]
+        trace: String,
+        #[arg(help = "Path to C# project directory")]
+        source: String,
+        #[arg(long, help = "Trace ID to follow")]
+        trace_id: Option<String>,
+    },
+    /// Query error edges and their code locations
+    Query {
+        #[arg(help = "Path to OTLP JSON trace file")]
+        trace: String,
+        #[arg(help = "Path to C# project directory")]
+        source: String,
+        #[arg(long, help = "Filter by service name")]
+        service: Option<String>,
+    },
+    /// Query Prometheus for service graph metrics (requires `online` feature)
+    #[cfg(feature = "online")]
+    Prometheus {
+        #[arg(help = "Prometheus URL (e.g. http://localhost:9090)")]
+        url: String,
+        #[arg(long, default_value = "5m", help = "Time range (e.g. 5m, 1h)")]
+        since: String,
+        #[arg(long, help = "Output format: json, dot")]
+        format: Option<String>,
+    },
+}
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Commands::Sdg { trace, format, stats } => {
+            tinylink::cli::commands::handle_sdg(&trace, format.as_deref(), stats)
+        }
+        Commands::Code { source, service, format } => {
+            tinylink::cli::commands::handle_code(&source, service.as_deref(), format.as_deref())
+        }
+        Commands::Link { trace, source, format } => {
+            tinylink::cli::commands::handle_link(&trace, &source, format.as_deref())
+        }
+        Commands::Tracepath { trace, source, trace_id } => {
+            tinylink::cli::commands::handle_tracepath(&trace, &source, trace_id.as_deref())
+        }
+        Commands::Query { trace, source, service } => {
+            tinylink::cli::commands::handle_query(&trace, &source, service.as_deref())
+        }
+        #[cfg(feature = "online")]
+        Commands::Prometheus { url, since, format } => {
+            tinylink::cli::commands::handle_prometheus(&url, &since, format.as_deref())
+        }
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+}

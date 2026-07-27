@@ -1,0 +1,91 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "Frontend"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "abc123",
+              "spanId": "span1",
+              "parentSpanId": "",
+              "name": "HTTP GET /api/products",
+              "kind": 2,
+              "startTimeUnixNano": 0,
+              "endTimeUnixNano": 200000000
+            },
+            {
+              "traceId": "abc123",
+              "spanId": "span2",
+              "parentSpanId": "span1",
+              "name": "HTTP GET /api/products",
+              "kind": 3,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.target", "value": {"stringValue": "/api/products"}}
+              ],
+              "startTimeUnixNano": 50000000,
+              "endTimeUnixNano": 150000000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "CatalogAPI"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "abc123",
+              "spanId": "span3",
+              "parentSpanId": "span2",
+              "name": "POST /validate",
+              "kind": 2,
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "POST"}},
+                {"key": "http.route", "value": {"stringValue": "/validate"}}
+              ],
+              "startTimeUnixNano": 150000000,
+              "endTimeUnixNano": 200000000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "OrderingAPI"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "abc123",
+              "spanId": "span4",
+              "parentSpanId": "span3",
+              "name": "SELECT",
+              "kind": 3,
+              "attributes": [
+                {"key": "db.system", "value": {"stringValue": "postgresql"}},
+                {"key": "db.name", "value": {"stringValue": "orders_db"}}
+              ],
+              "startTimeUnixNano": 160000000,
+              "endTimeUnixNano": 180000000
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
