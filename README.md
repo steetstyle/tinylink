@@ -52,6 +52,8 @@ done
 | `explore <trace> <sources>` | Cross-service exploration with drill-down |
 | `index <sources> -o <file>` | Build a reusable SQLite index |
 | `serve --index <file>` | Serve trace→code linking over MCP |
+| `logs-ingest <path>` | Load OTLP log payloads into the log store |
+| `logs-search` | Query the log store |
 | `route <source>` | List discovered HTTP routes (via tiny-pdg-cs) |
 | `prometheus <url>` | Build the SDG from Prometheus metrics (`online` feature) |
 
@@ -96,6 +98,36 @@ tinylink serve --index tinylink.db
 | `blast_radius` | what endpoints reach a method, and its callers/callees |
 | `find_methods` | where is this class/method really defined |
 | `list_indexed_services` | which services and endpoints exist |
+| `ingest_logs` | load OTLP log payloads into the log store (writes) |
+| `search_logs` | what a trace, service or error string actually logged |
+
+### Logs
+
+Traces arrive per call, logs do not: they are loaded once and then queried.
+
+```bash
+tinylink logs-ingest ./captures          # a file, or a directory, one payload per file
+tinylink logs-search --min-severity Error
+tinylink logs-search --trace-id 4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+The store defaults to `TINYLINK_LOG_STORE`, else `<index>.logs.db`, so a CLI
+ingest and a server query can be pointed at one file.
+
+Two things about the data are worth knowing before you filter it. Both come from
+reading a real `AddOtlpExporter` capture rather than the schema:
+
+- **The body is the unrendered message template.** A log exports as
+  `Handler {HandlerName} failed` with the values in separate attributes. Free-text
+  search therefore covers attribute values too — otherwise the string you paste in
+  during an incident would not match the log that contains it.
+- **The .NET SDK sends gRPC, not HTTP.** `AddOtlpExporter` with only an
+  `Endpoint` set talks to 4317 over gRPC. Capturing from a collector, or setting
+  `Protocol = OtlpExportProtocol.HttpProtobuf`, is what makes the payloads
+  readable.
+
+Both OTLP/JSON and OTLP/protobuf are accepted, gzipped or not, detected by
+sniffing the first bytes rather than trusting a header or a file extension.
 
 Point any MCP client at the binary over stdio. For a fuller setup — an agent
 investigating incidents end to end — see
