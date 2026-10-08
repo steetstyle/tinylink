@@ -112,15 +112,8 @@ pub struct ProjectLoad {
     pub inline_lambda_routes: usize,
 }
 
-/// Service name for a project directory: its final path component.
-pub fn service_name_for_dir(dir: &str) -> String {
-    std::path::Path::new(dir)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default()
-}
-
-/// Load one project directory, tagging its methods with the service name.
+/// Load one project directory, tagging its methods and routes with the service
+/// name so lookups can be scoped to a service.
 pub fn load_project(dir: &str) -> ProjectLoad {
     let service = service_name_for_dir(dir);
 
@@ -144,7 +137,12 @@ pub fn load_project(dir: &str) -> ProjectLoad {
     };
 
     let (routes, inline_lambda_routes) = match loader::load_routes(dir) {
-        Ok(rt) => (Some(rt.0), rt.1),
+        Ok((mut rt, lambdas)) => {
+            for e in &mut rt.entries {
+                e.service = Some(service.clone());
+            }
+            (Some(rt), lambdas)
+        }
         Err(e) => {
             // Keep the code graph even when route extraction fails: the call
             // graph is still useful, and the caller reports the gap.
@@ -172,17 +170,84 @@ pub fn load_project(dir: &str) -> ProjectLoad {
     }
 }
 
+/// Service name for a project directory: its final path component.
+pub fn service_name_for_dir(dir: &str) -> String {
+    std::path::Path::new(dir)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Split a directory into the project directories it contains.
+///
+/// A .NET solution root holds many services in subdirectories, and trace service
+/// names refer to those subdirectories (`Agency.API`), not to the root. Treating
+/// the root as one service tags every method with the solution's folder name, so
+/// every service-scoped route lookup then fails and a correctly matched endpoint
+/// degrades to an unscoped, lower-confidence guess.
+///
+/// A directory that is itself a project (it contains a `.csproj`) or a plain set
+/// of `.cs` files is returned unchanged.
+pub fn project_dirs_in(dir: &str) -> Vec<String> {
+    let path = std::path::Path::new(dir);
+    if !path.is_dir() {
+        return vec![dir.to_string()];
+    }
+    // Already a project: load it whole.
+    if has_csproj(path) {
+        return vec![dir.to_string()];
+    }
+
+    let mut projects: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() && has_csproj(&child) {
+                projects.push(child.to_string_lossy().to_string());
+            }
+        }
+    }
+    projects.sort();
+
+    if projects.is_empty() {
+        // Not a solution layout: a directory of loose .cs files, or a project
+        // without a .csproj. Load it as one unit.
+        vec![dir.to_string()]
+    } else {
+        projects
+    }
+}
+
+fn has_csproj(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        e.path()
+            .extension()
+            .map(|x| x.eq_ignore_ascii_case("csproj"))
+            .unwrap_or(false)
+    })
+}
+
 /// Load and merge code graphs + route tables from multiple comma-separated
 /// project directories. Each project is annotated with its directory name as
 /// service. Fails if any project cannot be loaded.
+///
+/// A directory that is a solution root is expanded into its constituent projects
+/// so that each service is tagged with its own name; see [`project_dirs_in`].
 pub fn load_merged_projects(sources: &str) -> Result<(CodeGraph, RouteTable)> {
     let dirs = split_sources(sources)?;
+    load_merged_project_dirs(&dirs)
+}
 
+/// Like [`load_merged_projects`] but takes resolved directories.
+pub fn load_merged_project_dirs(dirs: &[String]) -> Result<(CodeGraph, RouteTable)> {
     let mut merged_code = CodeGraph::new();
     let mut merged_routes = RouteTable::new();
 
-    for dir in &dirs {
-        let loaded = load_project(dir);
+    for dir in expand_solution_roots(dirs) {
+        let loaded = load_project(&dir);
         if let Some(ref err) = loaded.error {
             anyhow::bail!("{}: {}", dir, err);
         }
@@ -195,6 +260,19 @@ pub fn load_merged_projects(sources: &str) -> Result<(CodeGraph, RouteTable)> {
     }
 
     Ok((merged_code, merged_routes))
+}
+
+/// Expand solution roots into their projects, keeping the order stable.
+pub fn expand_solution_roots(dirs: &[String]) -> Vec<String> {
+    let mut expanded = Vec::new();
+    for dir in dirs {
+        for project in project_dirs_in(dir) {
+            if !expanded.contains(&project) {
+                expanded.push(project);
+            }
+        }
+    }
+    expanded
 }
 
 /// Split and validate the comma-separated `--sources` argument.
@@ -239,11 +317,14 @@ fn merge_code(into: &mut CodeGraph, cg: CodeGraph) {
 
 fn merge_routes(into: &mut RouteTable, rt: RouteTable) {
     for e in rt.entries {
+        // Service is part of the identity: two services may legitimately declare
+        // the same pattern, and collapsing them would lose one service's route.
         if !into.entries.iter().any(|x| {
             x.http_method == e.http_method
                 && x.route_pattern == e.route_pattern
                 && x.class == e.class
                 && x.method == e.method
+                && x.service == e.service
         }) {
             into.add(e);
         }

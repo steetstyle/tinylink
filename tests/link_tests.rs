@@ -27,6 +27,7 @@ fn test_route_table_basic_matching() {
         route_pattern: "/api/items/{id}".into(),
         class: "ItemsController".into(),
         method: "GetItem".into(),
+        service: None,
     });
     let matches = table.match_route("GET", "/api/items/42");
     assert_eq!(matches.len(), 1);

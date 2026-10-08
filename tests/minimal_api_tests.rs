@@ -150,6 +150,157 @@ fn write_error_trace(dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn test_solution_root_is_split_into_per_project_services() {
+    use tinylink::link::builder::{expand_solution_roots, project_dirs_in};
+
+    let root = temp_dir("solution");
+    let agency = root.join("Agency.API");
+    let billing = root.join("Billing.API");
+    let shared = root.join("Shared.Common");
+    std::fs::create_dir_all(&agency).unwrap();
+    std::fs::create_dir_all(&billing).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    for (dir, name) in [
+        (&agency, "Agency"),
+        (&billing, "Billing"),
+        (&shared, "Common"),
+    ] {
+        std::fs::write(dir.join(format!("{name}.csproj")), "<Project/>").unwrap();
+    }
+    // A stray directory with no .csproj must not be mistaken for a project.
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+
+    // Each service needs real sources, otherwise there are no routes to tag.
+    std::fs::write(
+        agency.join("Endpoint.cs"),
+        "namespace Agency.API;\npublic class AgencyEndpoint { public static IResult Handler() => null; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agency.join("Ext.cs"),
+        "app.MapGet(\"/api/agency/member\", AgencyEndpoint.Handler);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        billing.join("Endpoint.cs"),
+        "namespace Billing.API;\npublic class BillingEndpoint { public static IResult Handler() => null; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        billing.join("Ext.cs"),
+        "app.MapGet(\"/api/billing/invoice\", BillingEndpoint.Handler);\n",
+    )
+    .unwrap();
+
+    let found = project_dirs_in(root.to_str().unwrap());
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(found.iter().any(|d| d.ends_with("Agency.API")), "{found:?}");
+    assert!(
+        found.iter().any(|d| d.ends_with("Billing.API")),
+        "{found:?}"
+    );
+    assert!(
+        !found.iter().any(|d| d.ends_with("docs")),
+        "a directory without a .csproj is not a project: {found:?}"
+    );
+
+    // And services end up tagged with their own names.
+    let (code, routes) =
+        builder::load_merged_projects(root.to_str().unwrap()).expect("load solution root");
+    let route_services: Vec<&str> = routes
+        .entries
+        .iter()
+        .filter_map(|r| r.service.as_deref())
+        .collect();
+    assert!(
+        route_services.contains(&"Agency.API"),
+        "routes must carry their own service name: {route_services:?}"
+    );
+    assert!(code
+        .methods
+        .iter()
+        .any(|m| m.service.as_deref() == Some("Agency.API")));
+
+    let expanded = expand_solution_roots(&[root.to_str().unwrap().to_string()]);
+    assert_eq!(expanded.len(), 3, "{expanded:?}");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn test_single_project_directory_is_not_split() {
+    use tinylink::link::builder::project_dirs_in;
+
+    let root = temp_dir("single_project");
+    let svc = root.join("Agency.API");
+    std::fs::create_dir_all(&svc).unwrap();
+    std::fs::write(svc.join("Agency.API.csproj"), "<Project/>").unwrap();
+    std::fs::write(
+        svc.join("Handler.cs"),
+        "namespace A;\npublic class H { public static void M() {} }\n",
+    )
+    .unwrap();
+
+    let found = project_dirs_in(svc.to_str().unwrap());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].ends_with("Agency.API"));
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn test_loose_cs_directory_loads_as_one_service() {
+    use tinylink::link::builder::project_dirs_in;
+
+    let root = temp_dir("loose");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("A.cs"), "namespace A;\npublic class A { }\n").unwrap();
+
+    let found = project_dirs_in(root.to_str().unwrap());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0], root.to_str().unwrap());
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn test_same_class_and_method_in_two_services_are_both_kept() {
+    use tinylink::code::types::{CodeGraph, MethodNode};
+
+    let mut g = CodeGraph::new();
+    for service in ["Agency.API", "Billing.API"] {
+        g.add_method(MethodNode {
+            class: "SharedHandler".into(),
+            method: "Handle".into(),
+            signature: "void Handle()".into(),
+            file: "H.cs".into(),
+            line_start: 1,
+            line_end: 5,
+            service: Some(service.into()),
+        });
+    }
+    assert_eq!(
+        g.methods.len(),
+        2,
+        "de-duplicating on class+method alone drops one service's handler"
+    );
+    assert_eq!(
+        g.find_method_in("SharedHandler", "Handle", "Agency.API")
+            .unwrap()
+            .service
+            .as_deref(),
+        Some("Agency.API")
+    );
+    assert_eq!(
+        g.find_method_in("SharedHandler", "Handle", "Billing.API")
+            .unwrap()
+            .service
+            .as_deref(),
+        Some("Billing.API")
+    );
+}
+
+#[test]
 fn test_minimal_api_routes_are_extracted() {
     let root = temp_dir("routes");
     write_two_services(&root);

@@ -1,0 +1,58 @@
+diff --git a/Infrastructure.Telemetry.AspNetCore/Middleware/TelemetryMiddleware.cs b/Infrastructure.Telemetry.AspNetCore/Middleware/TelemetryMiddleware.cs
+index 39e313b..e755a8c 100644
+--- a/Infrastructure.Telemetry.AspNetCore/Middleware/TelemetryMiddleware.cs
++++ b/Infrastructure.Telemetry.AspNetCore/Middleware/TelemetryMiddleware.cs
+@@ -37,6 +37,22 @@ public class TelemetryMiddleware
+         // Always publish endpoint so nested StartClass can match allowlist pairs.
+         TelemetryFilter.SetEndpointBaggage(Activity.Current, routeKey);
+ 
++        // Attach the trace identity to every log written while handling this
++        // request. Without this the OTLP log records carry no TraceId, so a log
++        // cannot be joined to the trace that produced it — the whole point of
++        // exporting logs. The Activity may be null when the capture filter is
++        // off, so fall back to the ASP.NET Core ambient activity and only then
++        // to omitting the keys.
++        var activity = Activity.Current;
++        using var logScope = activity is null
++            ? null
++            : _logger.BeginScope(new Dictionary<string, object?>
++            {
++                ["TraceId"] = activity.TraceId.ToString(),
++                ["SpanId"] = activity.SpanId.ToString(),
++                ["Service"] = routeKey,
++            });
++
+         var fullCapture = _filter.CaptureMode == TelemetryCaptureMode.All
+                           || _filter.IsEnabled(routeKey, className);
+         var recording = _filter.ShouldRecordPath() || _filter.HasScopeForEndpoint(routeKey);
+diff --git a/Infrastructure.Telemetry.AspNetCore/TelemetryAspNetCoreExtension.cs b/Infrastructure.Telemetry.AspNetCore/TelemetryAspNetCoreExtension.cs
+index 9da7880..fdd8a54 100644
+--- a/Infrastructure.Telemetry.AspNetCore/TelemetryAspNetCoreExtension.cs
++++ b/Infrastructure.Telemetry.AspNetCore/TelemetryAspNetCoreExtension.cs
+@@ -111,10 +111,25 @@ public static class TelemetryAspNetCoreExtension
+                 if (options.UseOtlpExporter)
+                     metrics.AddOtlpExporter(o => { o.Endpoint = new Uri(otlpEndpoint); });
+             })
+-            .WithLogging();
++            .WithLogging(logging =>
++            {
++                // Without an exporter here the OTel log pipeline is configured
++                // but sends nothing: trace and metrics each got an OTLP exporter,
++                // logs got none, so an RCA agent correlating a trace with the
++                // error log that explains it had no logs to read.
++                logging.AddOtlpExporter(o => { o.Endpoint = new Uri(otlpEndpoint); });
++
++                if (options.EnableConsoleExporter) logging.AddConsoleExporter();
++            });
+ 
+         services.AddLogging(logging =>
+         {
++            // IncludeScopes=true is what carries the TraceId/SpanId/Service
++            // attributes from TelemetryMiddleware's BeginScope into the exported
++            // log record. Without it those keys are dropped and a log cannot be
++            // joined back to the trace that produced it.
++            logging.AddOpenTelemetry(options => options.IncludeScopes = true);
++
+             // Drop high-volume ASP.NET pipeline Information noise from telemetry.log export.
+             logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+             logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);

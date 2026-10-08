@@ -46,10 +46,18 @@ fn map_endpoint(
         let mut in_service: Option<&crate::code::route::RouteEntry> = None;
         let mut any_match: Option<&crate::code::route::RouteEntry> = None;
         for entry in route_table.match_route(http_method, path) {
-            let is_registration = is_registration_method(&entry.method);
-            if !is_registration && route_class_belongs_to_service(entry, service, code_graph) {
+            if is_registration_method(&entry.method) {
+                continue;
+            }
+            // Prefer the route's own service tag; fall back to inferring
+            // ownership from the handler class for routes loaded without one.
+            let owned = match entry.service.as_deref() {
+                Some(tag) => service_matches(tag, service),
+                None => route_class_belongs_to_service(entry, service, code_graph),
+            };
+            if owned {
                 in_service = Some(pick_more_specific(in_service, entry));
-            } else if !is_registration {
+            } else {
                 any_match = Some(pick_more_specific(any_match, entry));
             }
         }
@@ -144,6 +152,22 @@ fn method_belongs_to_service(m: &crate::code::types::MethodNode, svc_lower: &str
         let s_lower = s.to_lowercase();
         s_lower.contains(svc_lower) || svc_lower.contains(&s_lower)
     })
+}
+
+/// Does a route tagged with `tag` belong to `service`?
+///
+/// Both sides are normalised by dropping `.` and `_`, because trace service
+/// names and project directory names rarely agree on punctuation:
+/// `Agency.API` vs `Agency.API`, `AdNetwork.Api` vs `AdNetwork.API`.
+fn service_matches(tag: &str, service: &str) -> bool {
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    };
+    let (a, b) = (norm(tag), norm(service));
+    !a.is_empty() && !b.is_empty() && (a == b || a.contains(&b) || b.contains(&a))
 }
 
 /// Keep whichever candidate has the more specific (longer) route pattern.
@@ -418,12 +442,14 @@ mod tests {
             route_pattern: "/api/items/{id}".into(),
             class: "CatalogApi".into(),
             method: "GetItemById".into(),
+            service: None,
         });
         rt.add(RouteEntry {
             http_method: "POST".into(),
             route_pattern: "/validate".into(),
             class: "OrderValidator".into(),
             method: "Validate".into(),
+            service: None,
         });
         rt
     }
@@ -518,12 +544,14 @@ mod tests {
             route_pattern: "/api/agency/{agencyId}/member".into(),
             class: "AgencyMemberEndpoint".into(),
             method: "Handler".into(),
+            service: None,
         });
         rt.add(RouteEntry {
             http_method: "GET".into(),
             route_pattern: "/api/billing/{accountId}/member".into(),
             class: "BillingMemberEndpoint".into(),
             method: "Handler".into(),
+            service: None,
         });
 
         let (agency, conf) = map_endpoint("Agency.API", "GET /api/agency/9f1c/member", &cg, &rt);
@@ -555,6 +583,7 @@ mod tests {
             route_pattern: "/api/agency/{agencyId}/member".into(),
             class: "AgencyMemberEndpoint".into(),
             method: "Handler".into(),
+            service: None,
         });
 
         // Frontend has no code, so the only candidate is another service's.

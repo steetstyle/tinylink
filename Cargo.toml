@@ -25,6 +25,14 @@ tokio = { version = "1", features = ["full"], optional = true }
 # method declaration's line range. Keep the version in lockstep with
 # tiny-pdg-cs (tree-sitter 0.25 / tree-sitter-c-sharp 0.23).
 tree-sitter = "0.25"
+# `bundled` compiles SQLite from source so the binary has no system dependency.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Stable content hash so an unchanged index is reused instead of reparsed.
+blake3 = "1"
+# MCP server (`tinylink serve`). Pinned to the same rmcp/schemars versions as
+# tiny-pdg-cs so one client — and tiny-rca — can drive both.
+rmcp = { version = "3", features = ["server", "transport-io"], optional = true }
+schemars = { version = "1", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -33,6 +41,8 @@ pretty_assertions = "1"
 [features]
 default = ["online"]
 online = ["reqwest", "tokio"]
+# `serve` needs a tokio runtime; the index and CLI paths do not.
+mcp = ["dep:rmcp", "dep:schemars"]
 
 [[bench]]
 name = "bench_sdg"

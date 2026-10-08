@@ -50,11 +50,29 @@ impl CodeGraph {
             .find(|m| m.class == class && m.method == method)
     }
 
+    /// Find a method within one service.
+    ///
+    /// The same class and method can exist in several services, and their entry
+    /// points are genuinely different, so an unscoped [`Self::find_method`]
+    /// cannot distinguish them.
+    pub fn find_method_in(&self, class: &str, method: &str, service: &str) -> Option<&MethodNode> {
+        self.methods.iter().find(|m| {
+            m.class == class && m.method == method && m.service.as_deref() == Some(service)
+        })
+    }
+
+    /// Add a method, de-duplicating by (service, class, method).
+    ///
+    /// Service is part of the identity: a single .NET solution routinely has
+    /// the same class and method in several projects (a shared handler and a
+    /// local copy), and comparing only class and method silently dropped
+    /// whichever loaded second. That loses a service's entry point and, because
+    /// route lookups are service-scoped, breaks its endpoint mapping too.
     pub fn add_method(&mut self, node: MethodNode) {
         if !self
             .methods
             .iter()
-            .any(|m| m.class == node.class && m.method == node.method)
+            .any(|m| m.class == node.class && m.method == node.method && m.service == node.service)
         {
             self.methods.push(node);
         }

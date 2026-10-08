@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::code::loader;
-use crate::link::builder;
+use crate::link::{builder, index};
 use crate::sdg::otel;
 
 pub fn handle_sdg(trace: &str, format: Option<&str>, stats: bool) -> Result<()> {
@@ -131,6 +131,78 @@ pub fn handle_tracepath(trace: &str, sources: &str, trace_id: Option<&str>) -> R
         );
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Index
+// ---------------------------------------------------------------------------
+
+/// Build or reuse a SQLite index of the code, routes and call edges.
+///
+/// The other commands reparse every `.cs` file on each run, which is fine for a
+/// one-shot call and far too slow for a long-lived process such as an MCP server.
+/// This writes the parsed result to a file that later runs can read.
+///
+/// Skips the rebuild when the sources are byte-for-byte unchanged, so this is
+/// cheap to call from CI on every commit.
+pub fn handle_index(sources: &str, out: &str, force: bool, dry_run: bool) -> Result<()> {
+    let dirs = builder::split_sources(sources)?;
+    let out_path = std::path::Path::new(out);
+
+    let wanted_hash = index::content_hash(&dirs)?;
+
+    if !force {
+        if let Ok(conn) = index::open(out_path) {
+            if index::check_schema(&conn).is_ok() {
+                if let Some(existing) = index::stored_hash(&conn)? {
+                    if existing == wanted_hash {
+                        // Summary goes to stderr so stdout stays clean for
+                        // scripts that capture it.
+                        eprintln!(
+                            "Index is up to date ({}); use --force to rebuild.",
+                            out_path.display()
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    let index = index::build(&dirs)?;
+
+    for warning in &index.warnings {
+        eprintln!("  ⚠ {}", warning);
+    }
+
+    eprintln!(
+        "Indexed {} methods, {} routes, {} call edges across {} project(s)",
+        index.code.methods.len(),
+        index.routes.entries.len(),
+        index.code.calls.len(),
+        dirs.len()
+    );
+    if index.inline_lambda_routes > 0 {
+        eprintln!(
+            "  ⚠ {} route(s) use an inline lambda and have no named handler",
+            index.inline_lambda_routes
+        );
+    }
+
+    if dry_run {
+        eprintln!("Dry run: nothing written.");
+        return Ok(());
+    }
+
+    index::write(&index, out_path)?;
+    let size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "Wrote {} ({:.1} KiB), content hash {}",
+        out_path.display(),
+        size as f64 / 1024.0,
+        &index.content_hash[..12.min(index.content_hash.len())]
+    );
     Ok(())
 }
 

@@ -114,6 +114,7 @@ pub fn load_routes(source_dir: &str) -> Result<(RouteTable, usize)> {
             route_pattern: entry.path,
             class: entry.class,
             method: entry.handler,
+            service: None,
         });
     }
     Ok((table, stats.inline_lambda_routes))

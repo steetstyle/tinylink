@@ -35,6 +35,7 @@ fn build_test_data(size: usize) -> (ServiceGraph, CodeGraph, RouteTable) {
             route_pattern: format!("/api/{}/items", i),
             class,
             method,
+            service: Some(svc.clone()),
         });
     }
 

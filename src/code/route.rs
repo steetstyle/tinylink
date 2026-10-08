@@ -7,6 +7,13 @@ pub struct RouteEntry {
     pub route_pattern: String,
     pub class: String,
     pub method: String,
+    /// Service (project directory name) this route belongs to, when known.
+    ///
+    /// The route table merges every loaded project, so without this an
+    /// unscoped lookup returns whichever service registered a matching
+    /// pattern — confidently wrong when two services share a URL shape.
+    #[serde(default)]
+    pub service: Option<String>,
 }
 
 /// Route table mapping HTTP routes to methods
@@ -165,12 +172,14 @@ mod tests {
             route_pattern: "/api/{resource}".into(),
             class: "GenericHandler".into(),
             method: "Handle".into(),
+            service: None,
         });
         table.add(RouteEntry {
             http_method: "GET".into(),
             route_pattern: "/api/items".into(),
             class: "ItemsController".into(),
             method: "GetAll".into(),
+            service: None,
         });
         let best = table.match_best("GET", "/api/items");
         assert!(best.is_some());

@@ -66,6 +66,25 @@ enum Commands {
         #[arg(long, help = "Output format: json, dot")]
         format: Option<String>,
     },
+    /// Build a reusable SQLite index of code, routes and call edges
+    Index {
+        #[arg(help = "Path(s) to C# project directories (comma-separated)")]
+        sources: String,
+        #[arg(long, short, help = "Output path for the index file")]
+        out: String,
+        /// Rebuild even when the sources are unchanged since the last build
+        #[arg(long)]
+        force: bool,
+        /// Print a summary without writing the file
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Serve trace-to-code linking over MCP (stdio) for AI agents
+    Serve {
+        /// Path to a prebuilt index (see `tinylink index`)
+        #[arg(long, default_value = "tinylink.db")]
+        index: String,
+    },
     /// Generate PDG (Program Dependence Graph) DOT for a method
     Pdg {
         #[arg(help = "Path to C# project directory")]
@@ -144,10 +163,39 @@ fn main() {
             from,
             pdg,
         } => tinylink::cli::commands::handle_explore(&source, &sources, from.as_deref(), pdg),
+        Commands::Index {
+            sources,
+            out,
+            force,
+            dry_run,
+        } => tinylink::cli::commands::handle_index(&sources, &out, force, dry_run),
+        Commands::Serve { index } => serve(&index),
     };
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
+}
+
+/// Run the trace-to-code MCP server over stdio.
+#[cfg(feature = "mcp")]
+fn serve(index: &str) -> anyhow::Result<()> {
+    use rmcp::transport::stdio;
+    use rmcp::ServiceExt;
+
+    let server = tinylink::mcp::TraceLinkServer::new(std::path::PathBuf::from(index))?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        let service = server.serve(stdio()).await?;
+        service.waiting().await?;
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+#[cfg(not(feature = "mcp"))]
+fn serve(_index: &str) -> anyhow::Result<()> {
+    anyhow::bail!("`serve` requires the `mcp` feature: cargo build --features mcp")
 }
