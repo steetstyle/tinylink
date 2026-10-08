@@ -96,6 +96,51 @@ enum Commands {
         #[arg(long, default_value = "mcp")]
         path: String,
     },
+    /// Ingest OTLP log payloads into a log store
+    LogsIngest {
+        /// OTLP payload file, or a directory with one payload per file
+        source: String,
+        /// Log store file to write (defaults to TINYLINK_LOG_STORE)
+        #[arg(long)]
+        store: Option<String>,
+    },
+    /// Search a log store
+    LogsSearch {
+        /// Restrict to one trace id
+        #[arg(long)]
+        trace_id: Option<String>,
+        /// Restrict to one service, as the exporter named it
+        #[arg(long)]
+        service: Option<String>,
+        /// Minimum severity: Trace, Debug, Info, Warn, Error, Fatal
+        #[arg(long)]
+        min_severity: Option<String>,
+        /// Substring, matched against the body and attribute values
+        #[arg(long)]
+        contains: Option<String>,
+        /// Search attribute values only, ignoring the body
+        #[arg(long)]
+        attributes_only: bool,
+        /// Only records having an attribute with this key
+        #[arg(long)]
+        attribute_key: Option<String>,
+        /// Inclusive lower bound, Unix nanoseconds
+        #[arg(long)]
+        since: Option<u64>,
+        /// Exclusive upper bound, Unix nanoseconds
+        #[arg(long)]
+        until: Option<u64>,
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Log store file to read (defaults to TINYLINK_LOG_STORE)
+        #[arg(long)]
+        store: Option<String>,
+        /// Output format: text, json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
     /// Generate PDG (Program Dependence Graph) DOT for a method
     Pdg {
         #[arg(help = "Path to C# project directory")]
@@ -187,6 +232,37 @@ fn main() {
             port,
             path,
         } => serve(&index, http, bind, port, path),
+        Commands::LogsIngest { source, store } => logs_ingest(&source, store.as_deref()),
+        Commands::LogsSearch {
+            trace_id,
+            service,
+            min_severity,
+            contains,
+            attributes_only,
+            attribute_key,
+            since,
+            until,
+            limit,
+            offset,
+            store,
+            format,
+        } => match logs_search_args(
+            trace_id,
+            service,
+            min_severity,
+            contains,
+            attributes_only,
+            attribute_key,
+            since,
+            until,
+            limit,
+            offset,
+        ) {
+            Ok(query) => logs_search(query, store.as_deref(), &format),
+            // A bad flag should say what is valid rather than printing a usage
+            // block, so this is routed through the same error path as the rest.
+            Err(e) => Err(anyhow::Error::msg(format!("{e:#}"))),
+        },
     };
 
     if let Err(e) = result {
@@ -258,4 +334,150 @@ fn serve(
     _path: String,
 ) -> anyhow::Result<()> {
     anyhow::bail!("`serve` requires the `mcp` feature: cargo build --features mcp")
+}
+
+// ───────────────────────── logs ─────────────────────────
+
+/// Where a log store lives when `--store` is absent.
+///
+/// The MCP tools resolve the same way, so a CLI ingest and a server query can be
+/// pointed at one file.
+fn resolve_log_store(store: Option<&str>) -> std::path::PathBuf {
+    match store {
+        Some(path) => std::path::PathBuf::from(path),
+        None => match std::env::var("TINYLINK_LOG_STORE") {
+            Ok(path) if !path.is_empty() => std::path::PathBuf::from(path),
+            _ => std::path::PathBuf::from("tinylink.logs.db"),
+        },
+    }
+}
+
+fn logs_ingest(source: &str, store: Option<&str>) -> anyhow::Result<()> {
+    use tinylink::sdg::log_store::{LogStore, LogStorePath};
+
+    let path = resolve_log_store(store);
+    let mut store = LogStore::open(LogStorePath::File(path.clone()))?;
+    let report = store.insert_path(std::path::Path::new(source))?;
+
+    println!(
+        "Ingested {} record(s) from {} payload(s) into {}",
+        report.inserted,
+        report.payloads,
+        path.display()
+    );
+    println!("  distinct traces:  {}", report.traces);
+    println!("  distinct services: {}", report.services);
+    if !report.skipped.is_empty() {
+        // Never silent: a payload with no service.name makes every later service
+        // filter return nothing, and that looks like "no logs" rather than
+        // "logs we cannot attribute".
+        println!("  problems:");
+        for problem in &report.skipped {
+            println!("    - {problem}");
+        }
+    }
+    Ok(())
+}
+
+fn logs_search(
+    query: tinylink::sdg::log_store::LogQuery,
+    store: Option<&str>,
+    format: &str,
+) -> anyhow::Result<()> {
+    use tinylink::sdg::log_store::{LogStore, LogStorePath};
+
+    let path = resolve_log_store(store);
+    let store = LogStore::open(LogStorePath::File(path.clone()))?;
+    let result = tinylink::sdg::log_store::search_logs_json(&store, &query)?;
+
+    if format == "json" {
+        println!("{result}");
+        return Ok(());
+    }
+
+    let logs = result["logs"].as_array().cloned().unwrap_or_default();
+    if logs.is_empty() {
+        // Say what was searched, so "no match" is not read as "no logs exist".
+        println!(
+            "No matching logs. Store holds {} record(s).",
+            result["store_records"]
+        );
+        return Ok(());
+    }
+
+    for entry in &logs {
+        println!(
+            "[{}] {} {} — {}",
+            entry["severity"].as_str().unwrap_or("?"),
+            entry["time_unix_nano"].as_str().unwrap_or("?"),
+            entry["service"].as_str().unwrap_or("?"),
+            entry["body"].as_str().unwrap_or("")
+        );
+        if let Some(trace) = entry["trace_id"].as_str() {
+            println!("    trace {trace}");
+        }
+        let attributes = entry["attributes"].as_object().cloned().unwrap_or_default();
+        for (key, value) in attributes {
+            // Printed unquoted: the rendered message is what a human reads, and it
+            // only exists once the template's placeholders are filled from these
+            // attributes. JSON quoting would break copy-paste of an exception.
+            let rendered = match value {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            println!("    {key} = {rendered}");
+        }
+    }
+    println!(
+        "\nShowing {} of {} match(es) in a store of {} record(s).",
+        result["count"], result["total_matched"], result["store_records"]
+    );
+    if result["has_more"] == serde_json::json!(true) {
+        println!("More results exist; raise --limit or pass --offset.");
+    }
+    if result["excluded_untimed"].as_u64().unwrap_or(0) > 0 {
+        println!(
+            "{} record(s) carry no timestamp and cannot be matched by a time window.",
+            result["excluded_untimed"]
+        );
+    }
+    Ok(())
+}
+
+/// Build a query from CLI flags.
+///
+/// Kept separate from `main` so the argument list is not another long positional
+/// run at the call site, and so a missing flag is visibly `None` rather than a
+/// default that reads as a filter.
+#[allow(clippy::too_many_arguments)]
+fn logs_search_args(
+    trace_id: Option<String>,
+    service: Option<String>,
+    min_severity: Option<String>,
+    contains: Option<String>,
+    attributes_only: bool,
+    attribute_key: Option<String>,
+    since: Option<u64>,
+    until: Option<u64>,
+    limit: usize,
+    offset: usize,
+) -> anyhow::Result<tinylink::sdg::log_store::LogQuery> {
+    use tinylink::sdg::log_store::LogQuery;
+
+    Ok(LogQuery {
+        trace_id,
+        service,
+        min_severity: min_severity
+            .as_deref()
+            .map(LogQuery::parse_severity)
+            .transpose()?,
+        contains,
+        attributes_only,
+        attribute_key,
+        since_unix_nano: since,
+        until_unix_nano: until,
+        only_traceable: false,
+        limit: LogQuery::bounded_limit(Some(limit))?,
+        offset,
+    })
 }

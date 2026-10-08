@@ -662,11 +662,14 @@ public class GetMembersEndpoint
 /// Where a log store lives when the caller does not say.
 ///
 /// Environment first so a deployment can point it at a mounted volume, then the
-/// directory holding the code index, so the store and the index stay together and
-/// a relative invocation still finds the logs it just ingested.
+/// code index path with a different extension, so the store and the index stay
+/// together and a relative invocation still finds the logs it just ingested. The
+/// CLI resolves its default the same way.
 pub fn default_log_store_path(index_path: &Path) -> PathBuf {
     if let Ok(from_env) = std::env::var("TINYLINK_LOG_STORE") {
-        return PathBuf::from(from_env);
+        if !from_env.is_empty() {
+            return PathBuf::from(from_env);
+        }
     }
     let mut path = index_path.to_path_buf();
     path.set_extension("logs.db");
@@ -677,9 +680,10 @@ pub fn default_log_store_path(index_path: &Path) -> PathBuf {
 pub struct IngestLogsArgs {
     /// An OTLP payload file, or a directory of them (one payload per file).
     ///
-    /// A directory is walked one level deep. Several protobuf exports concatenated
-    /// into a single stream cannot be split reliably — OTLP carries no total
-    /// length — so one payload per file is required rather than guessed at.
+    /// A directory is walked one level deep, skipping the log store's own files.
+    /// Several protobuf exports concatenated into a single stream cannot be split
+    /// reliably — OTLP carries no total length — so one payload per file is
+    /// required rather than guessed at.
     pub source: String,
 }
 
@@ -700,18 +704,10 @@ pub fn ingest_logs(store: &mut LogStore, args: IngestLogsArgs) -> Result<Value, 
         .insert_path(source)
         .map_err(|e| format!("ingest failed for {}: {e:#}", source.display()))?;
 
-    Ok(json!({
-        "source": source.display().to_string(),
-        "records_inserted": report.inserted,
-        "payloads_read": report.payloads,
-        "distinct_traces": report.traces,
-        "distinct_services": report.services,
-        // Reported rather than swallowed: a missing service.name makes every
-        // later service filter silently return nothing.
-        "problems": report.skipped,
-        "store_records": store.len().map_err(|e| e.to_string())?,
-        "services": store.services().map_err(|e| e.to_string())?,
-    }))
+    let mut json =
+        crate::sdg::log_store::ingest_logs_json(&report, store).map_err(|e| e.to_string())?;
+    json["source"] = json!(source.display().to_string());
+    Ok(json)
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -719,8 +715,8 @@ pub struct SearchLogsArgs {
     /// Restrict to one trace. Case-insensitive.
     pub trace_id: Option<String>,
     /// Restrict to one service, exactly as the exporter named it
-    /// (`service.name`). Use `ingest_logs` or `search_logs` without this to see
-    /// what names are actually present.
+    /// (`service.name`). Every response lists `available_services`, so a wrong
+    /// guess is recoverable without a second call.
     pub service: Option<String>,
     /// Minimum severity: `Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`.
     /// Records whose severity cannot be determined never match.
@@ -744,69 +740,27 @@ pub struct SearchLogsArgs {
 
 /// Search the log store.
 ///
-/// Every filter is independent; there are no presets. A response reports
-/// `total_matched` alongside the window, plus how many records the store holds
-/// and how many were excluded for lacking a timestamp or a trace id, so a short
-/// answer is never mistaken for the whole story.
+/// Every filter is independent; there are no presets. The query building and the
+/// response live in [`crate::sdg::log_store`] so the CLI and this tool cannot
+/// drift apart in the fields that explain a short answer.
 pub fn search_logs(store: &LogStore, args: SearchLogsArgs) -> Result<Value, String> {
-    let min_severity = match args.min_severity.as_deref() {
-        None => None,
-        Some(text) => {
-            let severity = crate::sdg::log::Severity::from_number(0, text);
-            if severity == crate::sdg::log::Severity::Unknown {
-                return Err(format!(
-                    "unknown severity {text:?}; use Trace, Debug, Info, Warn, Error or Fatal"
-                ));
-            }
-            Some(severity)
-        }
-    };
-
-    let limit = args.limit.unwrap_or(crate::sdg::log_store::MAX_LIMIT);
-    if limit == 0 {
-        return Err("limit must be at least 1".into());
-    }
-
     let query = LogQuery {
         trace_id: args.trace_id,
         service: args.service,
-        min_severity,
+        min_severity: args
+            .min_severity
+            .as_deref()
+            .map(LogQuery::parse_severity)
+            .transpose()
+            .map_err(|e| e.to_string())?,
         contains: args.contains,
         attributes_only: args.attributes_only.unwrap_or(false),
         attribute_key: args.attribute_key,
         since_unix_nano: args.since_unix_nano,
         until_unix_nano: args.until_unix_nano,
         only_traceable: false,
-        limit,
+        limit: LogQuery::bounded_limit(args.limit).map_err(|e| e.to_string())?,
         offset: args.offset.unwrap_or(0),
     };
-
-    let result = store.query(&query).map_err(|e| e.to_string())?;
-
-    let logs: Vec<Value> = result
-        .matches
-        .iter()
-        .map(|m| {
-            let mut v = m.record.to_json();
-            v["service"] = json!(m.service);
-            v
-        })
-        .collect();
-
-    Ok(json!({
-        "logs": logs,
-        "count": result.matches.len(),
-        "total_matched": result.total_matched,
-        "offset": result.offset,
-        "has_more": result.truncated,
-        // Distinguishes "nothing matched" from "the store is empty" and from
-        // "records exist but carry no timestamp, so a time window excluded them".
-        "store_records": result.scanned,
-        "excluded_untimed": result.untimed,
-        "excluded_untraceable": result.untraceable,
-        "traces_in_page": result.traces(),
-        // Always present, so a wrong `service` guess is recoverable from the
-        // response instead of needing a separate discovery call.
-        "available_services": store.services().map_err(|e| e.to_string())?,
-    }))
+    crate::sdg::log_store::search_logs_json(store, &query).map_err(|e| e.to_string())
 }

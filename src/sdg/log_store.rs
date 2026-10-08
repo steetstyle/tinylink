@@ -122,7 +122,7 @@ impl LogStore {
         path.push(format!("tinylink_logs_{tag}_{}_{n}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        Ok(Self::open(LogStorePath::Temporary(path))?)
+        Self::open(LogStorePath::Temporary(path))
     }
 
     fn migrate(&self) -> Result<()> {
@@ -269,6 +269,36 @@ impl LogStore {
         self.insert_batch(&batch)
     }
 
+    /// Is this file part of the store itself?
+    ///
+    /// Pointing an ingest at the directory the store lives in is the obvious thing
+    /// to type — a captures directory with the store written beside it — and it
+    /// makes the store read its own database as a log payload. SQLite's `-wal` and
+    /// `-shm` sidecars get picked up too, so the exclusion covers those as well.
+    fn is_own_file(&self, path: &Path) -> bool {
+        let store = match &self.path {
+            LogStorePath::File(p) | LogStorePath::Temporary(p) => p,
+            LogStorePath::Memory => return false,
+        };
+        let same = |a: &Path, b: &Path| -> bool {
+            match (a.canonicalize(), b.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                // Before the file exists there is nothing canonical to compare, so
+                // fall back to the literal paths.
+                _ => a == b,
+            }
+        };
+        if same(path, store) {
+            return true;
+        }
+        // SQLite names its sidecars by appending to the whole file name, so
+        // `with_extension` is wrong here: it would turn logs.db into logs.wal.
+        // The suffixes already carry the leading hyphen.
+        ["-wal", "-shm", "-journal"]
+            .iter()
+            .any(|suffix| same(path, Path::new(&format!("{}{suffix}", store.display()))))
+    }
+
     /// Read every payload under `path` into the store.
     ///
     /// A directory is walked one level deep and each file is treated as one
@@ -276,6 +306,9 @@ impl LogStore {
     /// protobuf carries no total length, so several exports concatenated into one
     /// stream cannot be split apart reliably, and guessing would silently lose
     /// records. Requiring one payload per file makes a short read visible instead.
+    ///
+    /// The store's own files are skipped, so ingesting the directory the store
+    /// lives in does not make it read itself.
     pub fn insert_path(&mut self, path: &Path) -> Result<IngestReport> {
         let mut report = IngestReport::default();
         if path.is_dir() {
@@ -287,13 +320,30 @@ impl LogStore {
                 .collect();
             // Sorted so a repeat ingest reports the same ordering every time.
             files.sort();
+
+            let mut skipped_own = 0usize;
             for file in files {
+                if self.is_own_file(&file) {
+                    skipped_own += 1;
+                    continue;
+                }
                 match self.insert_file(&file) {
                     Ok(r) => merge(&mut report, r),
                     Err(e) => report.skipped.push(format!("{}: {e:#}", file.display())),
                 }
             }
+            if skipped_own > 0 {
+                report.skipped.push(format!(
+                    "skipped {skipped_own} file(s) belonging to the log store itself"
+                ));
+            }
         } else {
+            if self.is_own_file(path) {
+                anyhow::bail!(
+                    "{} is the log store itself, not a payload file",
+                    path.display()
+                );
+            }
             merge(&mut report, self.insert_file(path)?);
         }
         Ok(report)
@@ -311,12 +361,12 @@ impl LogStore {
                 .unwrap_or(bytes.len());
             &bytes[start..]
         };
-        let batch = if trimmed.first() == Some(&b'{') {
-            parse_json(trimmed)?
-        } else if trimmed.first() == Some(&b'[') {
-            parse_json(trimmed)?
-        } else {
-            parse_protobuf(&bytes)?
+        // `{` or `[` means JSON, anything else protobuf. Checking the first
+        // non-space byte beats trusting the extension: exporters disagree about
+        // what a `.bin` capture really is, and a wrong guess costs the file.
+        let batch = match trimmed.first() {
+            Some(b'{') | Some(b'[') => parse_json(trimmed)?,
+            _ => parse_protobuf(&bytes)?,
         };
         let mut report = self.insert_batch(&batch)?;
         if report.inserted == 0 {
@@ -555,24 +605,17 @@ impl LogQuery {
             where_parts.push("trace_id IS NOT NULL AND trace_id != ''");
         }
 
+        const SELECT: &str = "SELECT observed_unix_nano, id, service, trace_id, span_id, \
+                              severity_number, severity_text, body, attributes FROM logs";
         let sql = if where_parts.is_empty() {
-            format!(
-                "SELECT observed_unix_nano, id, service, trace_id, span_id, \
-                 severity_number, severity_text, body, attributes \
-                 FROM logs"
-            )
+            SELECT.to_string()
         } else {
             let clauses: Vec<String> = where_parts
                 .iter()
                 .enumerate()
                 .map(|(i, clause)| clause.replace("?N", &format!("?{}", i + 1)))
                 .collect();
-            format!(
-                "SELECT observed_unix_nano, id, service, trace_id, span_id, \
-                 severity_number, severity_text, body, attributes \
-                 FROM logs WHERE {}",
-                clauses.join(" AND ")
-            )
+            format!("{SELECT} WHERE {}", clauses.join(" AND "))
         };
         (sql, binds)
     }
@@ -614,11 +657,11 @@ impl LogQueryResult {
 pub const MAX_LIMIT: usize = 1000;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::sdg::log::LogRecord;
 
-    fn record(body: &str, severity: Severity, trace: Option<&str>) -> LogRecord {
+    pub(super) fn record(body: &str, severity: Severity, trace: Option<&str>) -> LogRecord {
         let mut attributes = BTreeMap::new();
         if let Some(t) = trace {
             attributes.insert("TraceId".into(), t.into());
@@ -645,7 +688,7 @@ mod tests {
         }
     }
 
-    fn store_with(records: Vec<LogRecord>) -> LogStore {
+    pub(super) fn store_with(records: Vec<LogRecord>) -> LogStore {
         let mut store = LogStore::temporary("unit").expect("store");
         store
             .insert_batch(&batch("Agency.API", records))
@@ -975,6 +1018,62 @@ mod tests {
         assert_eq!(store.len().unwrap(), 1);
     }
 
+    /// Ingesting the directory the store lives in must not make the store read
+    /// itself.
+    ///
+    /// That is the obvious command to type — a captures directory with the store
+    /// written beside it — and without the exclusion the store parses its own
+    /// database as a log payload and ingests SQLite's `-wal`/`-shm` sidecars too.
+    #[test]
+    fn ingesting_the_stores_own_directory_skips_the_store() {
+        let dir =
+            std::env::temp_dir().join(format!("tinylink_logsel_{}_{}", std::process::id(), {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static N: AtomicU64 = AtomicU64::new(0);
+                N.fetch_add(1, Ordering::Relaxed)
+            }));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("capture.bin"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/otlp-logs-capture.bin"
+            )),
+        )
+        .unwrap();
+
+        let store_path = dir.join("logs.db");
+        let mut store = LogStore::open(LogStorePath::File(store_path.clone())).expect("open");
+        // WAL mode creates the sidecars as soon as the store is written to, which
+        // is what makes them visible to the directory walk.
+        assert!(store.insert_batch(&batch("Agency.API", vec![])).is_ok());
+
+        let report = store.insert_path(&dir).expect("ingest");
+        assert_eq!(report.inserted, 8, "{report:?}");
+        assert_eq!(
+            report.payloads, 1,
+            "only the capture is a payload: {report:?}"
+        );
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|s| s.contains("belonging to the log store")),
+            "the skip must be reported, not silent: {:?}",
+            report.skipped
+        );
+
+        // Naming the store explicitly is a mistake worth catching too.
+        let err = store.insert_path(&store_path).expect_err("must refuse");
+        assert!(
+            format!("{err:#}").contains("is the log store itself"),
+            "{err:#}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A file that turns out not to be a payload must be reported by name. Reading
     /// a directory of captures is an ordinary operation and one bad file should not
     /// lose the rest.
@@ -994,5 +1093,155 @@ mod tests {
             report.skipped
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ───────────────────────── JSON rendering ─────────────────────────
+
+/// Render a query result as JSON, for both the MCP tool and the CLI.
+///
+/// Lives here rather than in the MCP tools because the log store is not an MCP
+/// concern: `tinylink logs-search` must work without the `mcp` feature, and two
+/// renderers would drift apart in exactly the fields that matter — the ones that
+/// explain a short answer.
+pub fn search_logs_json(store: &LogStore, query: &LogQuery) -> Result<serde_json::Value> {
+    let result = store.query(query)?;
+
+    let logs: Vec<serde_json::Value> = result
+        .matches
+        .iter()
+        .map(|m| {
+            let mut v = m.record.to_json();
+            v["service"] = serde_json::Value::String(m.service.clone());
+            v
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "logs": logs,
+        "count": result.matches.len(),
+        "total_matched": result.total_matched,
+        "offset": result.offset,
+        "has_more": result.truncated,
+        // Distinguishes "nothing matched" from "the store is empty" and from
+        // "records exist but carry no timestamp, so a time window excluded them".
+        "store_records": result.scanned,
+        "excluded_untimed": result.untimed,
+        "excluded_untraceable": result.untraceable,
+        "traces_in_page": result.traces(),
+        // Always present, so a wrong `service` guess is recoverable from the
+        // response instead of needing a separate discovery call.
+        "available_services": store.services()?,
+    }))
+}
+
+impl LogQuery {
+    /// Parse a severity name.
+    ///
+    /// An unrecognised name is an error rather than a default: silently treating
+    /// `--min-severity critcal` as "no filter" would return the whole store and
+    /// read as a confirmation that everything is fine.
+    pub fn parse_severity(text: &str) -> Result<Severity> {
+        let severity = Severity::from_number(0, text);
+        if severity == Severity::Unknown {
+            anyhow::bail!(
+                "unknown severity {text:?}; use Trace, Debug, Info, Warn, Error or Fatal"
+            );
+        }
+        Ok(severity)
+    }
+
+    /// Cap a caller-supplied limit.
+    pub fn bounded_limit(limit: Option<usize>) -> anyhow::Result<usize> {
+        let limit = limit.unwrap_or(MAX_LIMIT);
+        if limit == 0 {
+            anyhow::bail!("limit must be at least 1");
+        }
+        Ok(limit)
+    }
+}
+
+/// Render a report as JSON, for both the MCP tool and the CLI.
+pub fn ingest_logs_json(report: &IngestReport, store: &LogStore) -> Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "records_inserted": report.inserted,
+        "payloads_read": report.payloads,
+        "distinct_traces": report.traces,
+        "distinct_services": report.services,
+        // Reported rather than swallowed: a missing service.name makes every later
+        // service filter silently return nothing.
+        "problems": report.skipped,
+        "store_records": store.len()?,
+        "services": store.services()?,
+    }))
+}
+
+#[cfg(test)]
+mod json_tests {
+    use super::tests::{record, store_with};
+    use super::*;
+
+    fn seeded() -> LogStore {
+        let store = store_with(vec![
+            record("Handler {Name} failed", Severity::Error, Some("T1")),
+            record("all quiet", Severity::Info, Some("T1")),
+        ]);
+        store
+    }
+
+    #[test]
+    fn an_unrecognised_severity_is_refused() {
+        assert!(LogQuery::parse_severity("catastrophic").is_err());
+        // Spellings that do map are accepted, including the .NET LogLevel names.
+        assert_eq!(LogQuery::parse_severity("Error").unwrap(), Severity::Error);
+        assert_eq!(
+            LogQuery::parse_severity("critical").unwrap(),
+            Severity::Fatal
+        );
+        assert_eq!(LogQuery::parse_severity("WARNING").unwrap(), Severity::Warn);
+    }
+
+    #[test]
+    fn a_zero_limit_is_refused_rather_than_returning_nothing() {
+        assert!(LogQuery::bounded_limit(Some(0)).is_err());
+        assert_eq!(LogQuery::bounded_limit(Some(5)).unwrap(), 5);
+    }
+
+    #[test]
+    fn the_json_carries_the_fields_that_explain_a_short_answer() {
+        let store = seeded();
+        let json = search_logs_json(
+            &store,
+            &LogQuery {
+                limit: 1,
+                ..Default::default()
+            },
+        )
+        .expect("json");
+
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["total_matched"], 2, "the page is not the whole set");
+        assert_eq!(json["has_more"], true);
+        assert_eq!(json["store_records"], 2);
+        assert_eq!(json["available_services"][0], "Agency.API");
+        // Every entry names the service it came from; without it a log is not
+        // attributable to anything.
+        assert_eq!(json["logs"][0]["service"], "Agency.API");
+    }
+
+    #[test]
+    fn the_ingest_json_reports_problems_alongside_the_counts() {
+        let store = seeded();
+        let report = IngestReport {
+            inserted: 2,
+            payloads: 1,
+            traces: 1,
+            services: 1,
+            skipped: vec!["bad.json: not JSON".into()],
+        };
+        let json = ingest_logs_json(&report, &store).expect("json");
+        assert_eq!(json["records_inserted"], 2);
+        assert_eq!(json["problems"][0], "bad.json: not JSON");
+        assert_eq!(json["store_records"], 2);
     }
 }
