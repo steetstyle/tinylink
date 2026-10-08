@@ -31,8 +31,8 @@ enum Commands {
     Link {
         #[arg(help = "Path to OTLP JSON trace file")]
         trace: String,
-        #[arg(help = "Path to C# project directory")]
-        source: String,
+        #[arg(help = "Path(s) to C# project directories (comma-separated)")]
+        sources: String,
         #[arg(long, help = "Output format: json, dot")]
         format: Option<String>,
     },
@@ -40,8 +40,8 @@ enum Commands {
     Tracepath {
         #[arg(help = "Path to OTLP JSON trace file")]
         trace: String,
-        #[arg(help = "Path to C# project directory")]
-        source: String,
+        #[arg(help = "Path(s) to C# project directories (comma-separated)")]
+        sources: String,
         #[arg(long, help = "Trace ID to follow")]
         trace_id: Option<String>,
     },
@@ -49,8 +49,8 @@ enum Commands {
     Query {
         #[arg(help = "Path to OTLP JSON trace file")]
         trace: String,
-        #[arg(help = "Path to C# project directory")]
-        source: String,
+        #[arg(help = "Path(s) to C# project directories (comma-separated)")]
+        sources: String,
         #[arg(long, help = "Filter by service name")]
         service: Option<String>,
         #[arg(long, help = "Also show PDG for errored method")]
@@ -97,36 +97,53 @@ fn main() {
 
     let cli = Cli::parse();
     let result = match cli.command {
-        Commands::Sdg { trace, format, stats } => {
-            tinylink::cli::commands::handle_sdg(&trace, format.as_deref(), stats)
-        }
-        Commands::Code { source, service, format } => {
-            tinylink::cli::commands::handle_code(&source, service.as_deref(), format.as_deref())
-        }
-        Commands::Link { trace, source, format } => {
-            tinylink::cli::commands::handle_link(&trace, &source, format.as_deref())
-        }
-        Commands::Tracepath { trace, source, trace_id } => {
-            tinylink::cli::commands::handle_tracepath(&trace, &source, trace_id.as_deref())
-        }
-        Commands::Query { trace, source, service, pdg } => {
-            tinylink::cli::commands::handle_query(&trace, &source, service.as_deref(), pdg)
-        }
+        Commands::Sdg {
+            trace,
+            format,
+            stats,
+        } => tinylink::cli::commands::handle_sdg(&trace, format.as_deref(), stats),
+        Commands::Code {
+            source,
+            service,
+            format,
+        } => tinylink::cli::commands::handle_code(&source, service.as_deref(), format.as_deref()),
+        Commands::Link {
+            trace,
+            sources,
+            format,
+        } => tinylink::cli::commands::handle_link(&trace, &sources, format.as_deref()),
+        Commands::Tracepath {
+            trace,
+            sources,
+            trace_id,
+        } => tinylink::cli::commands::handle_tracepath(&trace, &sources, trace_id.as_deref()),
+        Commands::Query {
+            trace,
+            sources,
+            service,
+            pdg,
+        } => tinylink::cli::commands::handle_query(&trace, &sources, service.as_deref(), pdg),
         #[cfg(feature = "online")]
         Commands::Prometheus { url, since, format } => {
             tinylink::cli::commands::handle_prometheus(&url, &since, format.as_deref())
         }
-        Commands::Pdg { source, class, method, output } => {
-            tinylink::cli::commands::handle_pdg(
-                &source,
-                class.as_deref().unwrap_or(""),
-                method.as_deref().unwrap_or(""),
-                output.as_deref(),
-            )
-        }
-        Commands::Explore { source, sources, from, pdg } => {
-            tinylink::cli::commands::handle_explore(&source, &sources, from.as_deref(), pdg)
-        }
+        Commands::Pdg {
+            source,
+            class,
+            method,
+            output,
+        } => tinylink::cli::commands::handle_pdg(
+            &source,
+            class.as_deref().unwrap_or(""),
+            method.as_deref().unwrap_or(""),
+            output.as_deref(),
+        ),
+        Commands::Explore {
+            source,
+            sources,
+            from,
+            pdg,
+        } => tinylink::cli::commands::handle_explore(&source, &sources, from.as_deref(), pdg),
     };
 
     if let Err(e) = result {

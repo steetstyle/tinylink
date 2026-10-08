@@ -1,3 +1,5 @@
 /target
 **/*.rs.bk
-Cargo.lock
+
+# Example projects are fetched by example-projects/fetch.sh, not committed.
+/example-projects/*/

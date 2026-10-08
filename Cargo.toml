@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "SDG + PDG unification bridge — links OpenTelemetry service graphs to code-level dependence graphs"
+readme = "README.md"
+repository = "https://github.com/steetstyle/tinylink"
+keywords = ["opentelemetry", "static-analysis", "tracing", "dependency-graph", "dotnet"]
+categories = ["development-tools::debugging", "development-tools::profiling"]
 
 [dependencies]
 tiny-pdg-cs = { git = "https://github.com/steetstyle/tinypdg-cs.git" }
@@ -17,6 +21,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", features = ["json"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
+# Direct dependency: PDG drill-down walks the C# syntax tree to locate a
+# method declaration's line range. Keep the version in lockstep with
+# tiny-pdg-cs (tree-sitter 0.25 / tree-sitter-c-sharp 0.23).
+tree-sitter = "0.25"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

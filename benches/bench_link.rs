@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use tinylink::sdg::types::ServiceGraph;
+use tinylink::code::route::{RouteEntry, RouteTable};
 use tinylink::code::types::{CodeGraph, MethodNode};
-use tinylink::code::route::{RouteTable, RouteEntry};
+use tinylink::sdg::types::ServiceGraph;
 
 fn build_test_data(size: usize) -> (ServiceGraph, CodeGraph, RouteTable) {
     let mut sdg = ServiceGraph::new();
@@ -12,7 +12,15 @@ fn build_test_data(size: usize) -> (ServiceGraph, CodeGraph, RouteTable) {
         let svc = format!("Svc{}", i);
         let class = format!("Controller{}", i);
         let method = format!("GetItem{}", i);
-        sdg.add_edge(&svc, &format!("Svc{}", i + 1), &format!("GET /api/{}/items", i), "POST /validate", false, 100.0, "trace");
+        sdg.add_edge(
+            &svc,
+            &format!("Svc{}", i + 1),
+            &format!("GET /api/{}/items", i),
+            "POST /validate",
+            false,
+            100.0,
+            "trace",
+        );
         code.add_method(MethodNode {
             class: class.clone(),
             method: method.clone(),
@@ -58,7 +66,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     c.bench_function("route_match_template", |b| {
-        let pattern = "/api/items/{id}/details/{locale}";
+        let _pattern = "/api/items/{id}/details/{locale}";
         let path = "/api/items/42/details/en-US";
         b.iter(|| {
             let route = tinylink::code::route::RouteTable::new();

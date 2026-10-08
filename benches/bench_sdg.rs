@@ -35,9 +35,7 @@ fn bench_parse_small_trace() {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("sdg_parse_small_trace", |b| {
-        b.iter(bench_parse_small_trace)
-    });
+    c.bench_function("sdg_parse_small_trace", |b| b.iter(bench_parse_small_trace));
 
     c.bench_function("sdg_parse_empty_trace", |b| {
         b.iter(|| {
@@ -59,7 +57,11 @@ fn criterion_benchmark(c: &mut Criterion) {
             graph.add_edge(
                 &format!("Svc{}", i),
                 &format!("Svc{}", i + 1),
-                "ep1", "ep2", false, 50.0, "t",
+                "ep1",
+                "ep2",
+                false,
+                50.0,
+                "t",
             );
         }
         b.iter(|| {

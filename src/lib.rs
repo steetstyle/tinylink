@@ -1,4 +1,4 @@
-pub mod sdg;
+pub mod cli;
 pub mod code;
 pub mod link;
-pub mod cli;
+pub mod sdg;

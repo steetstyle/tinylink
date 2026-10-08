@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// A parsed route entry from C# source
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,9 +15,17 @@ pub struct RouteTable {
     pub entries: Vec<RouteEntry>,
 }
 
+impl Default for RouteTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RouteTable {
     pub fn new() -> Self {
-        RouteTable { entries: Vec::new() }
+        RouteTable {
+            entries: Vec::new(),
+        }
     }
 
     pub fn add(&mut self, entry: RouteEntry) {
@@ -28,7 +36,8 @@ impl RouteTable {
     /// Supports template parameters like {id}, {name}.
     pub fn match_route(&self, http_method: &str, path: &str) -> Vec<&RouteEntry> {
         let path_lower = path.to_lowercase();
-        self.entries.iter()
+        self.entries
+            .iter()
             .filter(|e| {
                 e.http_method.eq_ignore_ascii_case(http_method)
                     && match_template(&e.route_pattern, &path_lower)
@@ -43,7 +52,8 @@ impl RouteTable {
             return None;
         }
         // Return the most specific match (most segments)
-        matches.into_iter()
+        matches
+            .into_iter()
             .max_by_key(|e| e.route_pattern.matches('/').count())
     }
 }
@@ -88,7 +98,8 @@ fn match_template(pattern: &str, path: &str) -> bool {
             continue;
         }
         // Mismatch: skip version-looking segments in the longer list
-        if long[ri].len() > 1 && long[ri].starts_with(|c: char| c == 'v' || c == 'V')
+        if long[ri].len() > 1
+            && long[ri].starts_with(['v', 'V'])
             && long[ri][1..].chars().all(|c| c.is_ascii_digit())
         {
             ri += 1;
@@ -99,7 +110,8 @@ fn match_template(pattern: &str, path: &str) -> bool {
 
     // Allow remaining version segments in the longer list
     while ri < long.len() {
-        if long[ri].len() > 1 && long[ri].starts_with(|c: char| c == 'v' || c == 'V')
+        if long[ri].len() > 1
+            && long[ri].starts_with(['v', 'V'])
             && long[ri][1..].chars().all(|c| c.is_ascii_digit())
         {
             ri += 1;

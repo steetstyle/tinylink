@@ -1,7 +1,7 @@
+use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use serde::Deserialize;
-use anyhow::{Context, Result};
 
 use super::types::ServiceGraph;
 
@@ -37,10 +37,22 @@ pub struct OtelAttribute {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum OtelAttributeValue {
-    StringValue { #[serde(rename = "stringValue")] string_value: String },
-    IntValue { #[serde(rename = "intValue")] int_value: i64 },
-    DoubleValue { #[serde(rename = "doubleValue")] double_value: f64 },
-    BoolValue { #[serde(rename = "boolValue")] bool_value: bool },
+    StringValue {
+        #[serde(rename = "stringValue")]
+        string_value: String,
+    },
+    IntValue {
+        #[serde(rename = "intValue")]
+        int_value: i64,
+    },
+    DoubleValue {
+        #[serde(rename = "doubleValue")]
+        double_value: f64,
+    },
+    BoolValue {
+        #[serde(rename = "boolValue")]
+        bool_value: bool,
+    },
 }
 
 /// OTLP JSON resource spans structure
@@ -82,22 +94,21 @@ pub const STATUS_CODE_ERROR: i32 = 2;
 
 /// Parse OTLP JSON trace file and build ServiceGraph
 pub fn parse_trace_file(path: &str) -> Result<ServiceGraph> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read trace file: {}", path))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("Failed to read trace file: {}", path))?;
     parse_trace_json(&content)
 }
 
 /// Parse OTLP JSON string content and build ServiceGraph
 pub fn parse_trace_json(content: &str) -> Result<ServiceGraph> {
-    let export: OtelExportTrace = serde_json::from_str(content)
-        .context("Failed to parse OTLP JSON")?;
+    let export: OtelExportTrace =
+        serde_json::from_str(content).context("Failed to parse OTLP JSON")?;
 
     let mut graph = ServiceGraph::new();
     let mut spans_by_trace: HashMap<String, Vec<SpanEnriched>> = HashMap::new();
 
     for rspans in &export.resource_spans {
-        let resource_attrs = rspans.resource.as_ref()
-            .and_then(|r| r.attributes.as_ref());
+        let resource_attrs = rspans.resource.as_ref().and_then(|r| r.attributes.as_ref());
 
         let scope_spans = match &rspans.scope_spans {
             Some(s) => s,
@@ -117,13 +128,18 @@ pub fn parse_trace_json(content: &str) -> Result<ServiceGraph> {
                     name: span.name.clone(),
                     kind: span.kind.unwrap_or(SPAN_KIND_INTERNAL),
                     service_name,
-                    status_code: span.status.as_ref().map(|s| s.code.unwrap_or(0)).unwrap_or(0),
+                    status_code: span
+                        .status
+                        .as_ref()
+                        .map(|s| s.code.unwrap_or(0))
+                        .unwrap_or(0),
                     attributes: span.attributes.clone().unwrap_or_default(),
                     start_time_nano: span.start_time_unix_nano,
                     end_time_nano: span.end_time_unix_nano,
                 };
 
-                spans_by_trace.entry(enriched.trace_id.clone())
+                spans_by_trace
+                    .entry(enriched.trace_id.clone())
                     .or_default()
                     .push(enriched);
             }
@@ -137,7 +153,7 @@ pub fn parse_trace_json(content: &str) -> Result<ServiceGraph> {
         if has_error {
             graph.error_traces += 1;
         }
-        process_trace_spans(&mut graph, trace_id, &spans);
+        process_trace_spans(&mut graph, trace_id, spans);
     }
 
     Ok(graph)
@@ -158,16 +174,22 @@ struct SpanEnriched {
 }
 
 fn process_trace_spans(graph: &mut ServiceGraph, trace_id: &str, spans: &[SpanEnriched]) {
-    let by_kind: HashMap<i32, Vec<&SpanEnriched>> = spans.iter()
-        .filter(|s| s.kind == SPAN_KIND_CLIENT || s.kind == SPAN_KIND_SERVER
-            || s.kind == SPAN_KIND_PRODUCER || s.kind == SPAN_KIND_CONSUMER)
+    let by_kind: HashMap<i32, Vec<&SpanEnriched>> = spans
+        .iter()
+        .filter(|s| {
+            s.kind == SPAN_KIND_CLIENT
+                || s.kind == SPAN_KIND_SERVER
+                || s.kind == SPAN_KIND_PRODUCER
+                || s.kind == SPAN_KIND_CONSUMER
+        })
         .fold(HashMap::new(), |mut acc, s| {
             acc.entry(s.kind).or_default().push(s);
             acc
         });
 
     // Build parent→children map
-    let parent_map: HashMap<&str, Vec<&SpanEnriched>> = spans.iter()
+    let parent_map: HashMap<&str, Vec<&SpanEnriched>> = spans
+        .iter()
         .filter(|s| !s.parent_span_id.is_empty())
         .fold(HashMap::new(), |mut acc, s| {
             acc.entry(s.parent_span_id.as_str()).or_default().push(s);
@@ -182,21 +204,24 @@ fn process_trace_spans(graph: &mut ServiceGraph, trace_id: &str, spans: &[SpanEn
             let latency = duration_ms(client.start_time_nano, client.end_time_nano);
 
             // Find matching server span: server.parent_span_id == client.span_id
-            let server = by_kind.get(&SPAN_KIND_SERVER)
-                .and_then(|servers| {
-                    servers.iter().find(|s| s.parent_span_id == client.span_id)
-                })
+            let server = by_kind
+                .get(&SPAN_KIND_SERVER)
+                .and_then(|servers| servers.iter().find(|s| s.parent_span_id == client.span_id))
                 .or_else(|| {
                     let client_id = client.span_id.as_str();
-                    parent_map.get(client_id)
-                        .and_then(|children| {
-                            children.iter().find(|c| c.kind == SPAN_KIND_SERVER)
-                        })
+                    parent_map
+                        .get(client_id)
+                        .and_then(|children| children.iter().find(|c| c.kind == SPAN_KIND_SERVER))
                 });
 
             match server {
                 Some(server) => {
                     let target_ep = extract_endpoint(server);
+                    // An error can be recorded on either side of the hop. The
+                    // server is where a 5xx originates, so reading only the
+                    // client span missed server-side failures whenever the
+                    // caller did not also record the status.
+                    let error = error || is_error_span(server);
                     graph.add_edge(
                         &client.service_name,
                         &server.service_name,
@@ -212,19 +237,21 @@ fn process_trace_spans(graph: &mut ServiceGraph, trace_id: &str, spans: &[SpanEn
                     let is_db = client.attributes.iter().any(|a| {
                         a.key == "db.system" || a.key == "db.name" || a.key == "db.namespace"
                     });
-                    let is_messaging = client.attributes.iter().any(|a| {
-                        a.key.starts_with("messaging.")
-                    });
+                    let is_messaging = client
+                        .attributes
+                        .iter()
+                        .any(|a| a.key.starts_with("messaging."));
 
                     if is_db {
                         let db_name = get_attr(&client.attributes, "db.name")
                             .or_else(|| get_attr(&client.attributes, "db.system"))
                             .unwrap_or_else(|| "database".to_string());
+                        let db_ep = extract_non_http_endpoint(client);
                         graph.add_edge(
                             &client.service_name,
                             &db_name,
                             &source_ep,
-                            &source_ep,
+                            &db_ep,
                             error,
                             latency,
                             trace_id,
@@ -232,11 +259,12 @@ fn process_trace_spans(graph: &mut ServiceGraph, trace_id: &str, spans: &[SpanEn
                     } else if is_messaging {
                         let queue = get_attr(&client.attributes, "messaging.destination")
                             .unwrap_or_else(|| "queue".to_string());
+                        let queue_ep = extract_non_http_endpoint(client);
                         graph.add_edge(
                             &client.service_name,
                             &queue,
                             &source_ep,
-                            &source_ep,
+                            &queue_ep,
                             error,
                             latency,
                             trace_id,
@@ -250,12 +278,17 @@ fn process_trace_spans(graph: &mut ServiceGraph, trace_id: &str, spans: &[SpanEn
 
     // Process producer → consumer pairs
     if let Some(producers) = by_kind.get(&SPAN_KIND_PRODUCER) {
-        let consumers = by_kind.get(&SPAN_KIND_CONSUMER).cloned().unwrap_or_default();
+        let consumers = by_kind
+            .get(&SPAN_KIND_CONSUMER)
+            .cloned()
+            .unwrap_or_default();
         for producer in producers {
             let source_ep = extract_endpoint(producer);
             let error = is_error_span(producer);
             let latency = duration_ms(producer.start_time_nano, producer.end_time_nano);
-            let consumer = consumers.iter().find(|c| c.parent_span_id == producer.span_id);
+            let consumer = consumers
+                .iter()
+                .find(|c| c.parent_span_id == producer.span_id);
 
             if let Some(consumer) = consumer {
                 let target_ep = extract_endpoint(consumer);
@@ -282,20 +315,32 @@ fn extract_endpoint(span: &SpanEnriched) -> String {
     }
 
     // HTTP-style
-    let http_method = get_attr(&span.attributes, "http.method")
-        .unwrap_or_else(|| "GET".to_string());
+    let http_method =
+        get_attr(&span.attributes, "http.method").unwrap_or_else(|| "GET".to_string());
     let route = get_attr(&span.attributes, "http.route")
         .or_else(|| get_attr(&span.attributes, "http.target"))
         .unwrap_or_else(|| span.name.clone());
     format!("{} {}", http_method, route)
 }
 
+/// Endpoint label for a non-HTTP dependency (database, queue).
+///
+/// `extract_endpoint` assumes HTTP and defaults a missing `http.method` to
+/// "GET", which labelled a Postgres client span as "GET SELECT" — a verb that
+/// never existed and that then fed route matching as if it were real. Report
+/// the span name on its own for these spans instead.
+fn extract_non_http_endpoint(span: &SpanEnriched) -> String {
+    get_attr(&span.attributes, "db.operation")
+        .or_else(|| get_attr(&span.attributes, "messaging.operation"))
+        .unwrap_or_else(|| span.name.clone())
+}
+
 fn get_attr(attrs: &[OtelAttribute], key: &str) -> Option<String> {
-    attrs.iter().find(|a| a.key == key).and_then(|a| match &a.value {
-        OtelAttributeValue::StringValue { string_value } => Some(string_value.clone()),
-        OtelAttributeValue::IntValue { int_value } => Some(int_value.to_string()),
-        OtelAttributeValue::DoubleValue { double_value } => Some(double_value.to_string()),
-        OtelAttributeValue::BoolValue { bool_value } => Some(bool_value.to_string()),
+    attrs.iter().find(|a| a.key == key).map(|a| match &a.value {
+        OtelAttributeValue::StringValue { string_value } => string_value.clone(),
+        OtelAttributeValue::IntValue { int_value } => int_value.to_string(),
+        OtelAttributeValue::DoubleValue { double_value } => double_value.to_string(),
+        OtelAttributeValue::BoolValue { bool_value } => bool_value.to_string(),
     })
 }
 
@@ -442,11 +487,15 @@ mod tests {
             attributes: vec![
                 OtelAttribute {
                     key: "http.method".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "POST".into() },
+                    value: OtelAttributeValue::StringValue {
+                        string_value: "POST".into(),
+                    },
                 },
                 OtelAttribute {
                     key: "http.route".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "/api/items/{id}".into() },
+                    value: OtelAttributeValue::StringValue {
+                        string_value: "/api/items/{id}".into(),
+                    },
                 },
             ],
             start_time_nano: 0,
@@ -492,17 +541,24 @@ mod tests {
             attributes: vec![
                 OtelAttribute {
                     key: "rpc.service".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "package.GreeterService".into() },
+                    value: OtelAttributeValue::StringValue {
+                        string_value: "package.GreeterService".into(),
+                    },
                 },
                 OtelAttribute {
                     key: "rpc.method".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "SayHello".into() },
+                    value: OtelAttributeValue::StringValue {
+                        string_value: "SayHello".into(),
+                    },
                 },
             ],
             start_time_nano: 0,
             end_time_nano: 100_000_000,
         };
-        assert_eq!(extract_endpoint(&span), "POST /package.GreeterService/SayHello");
+        assert_eq!(
+            extract_endpoint(&span),
+            "POST /package.GreeterService/SayHello"
+        );
     }
 
     #[test]
@@ -515,12 +571,12 @@ mod tests {
             kind: SPAN_KIND_CLIENT,
             service_name: "svc".into(),
             status_code: 0,
-            attributes: vec![
-                OtelAttribute {
-                    key: "rpc.method".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "SayHello".into() },
+            attributes: vec![OtelAttribute {
+                key: "rpc.method".into(),
+                value: OtelAttributeValue::StringValue {
+                    string_value: "SayHello".into(),
                 },
-            ],
+            }],
             start_time_nano: 0,
             end_time_nano: 100_000_000,
         };
@@ -538,12 +594,12 @@ mod tests {
             kind: SPAN_KIND_CLIENT,
             service_name: "svc".into(),
             status_code: 0,
-            attributes: vec![
-                OtelAttribute {
-                    key: "http.status_code".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "500".into() },
+            attributes: vec![OtelAttribute {
+                key: "http.status_code".into(),
+                value: OtelAttributeValue::StringValue {
+                    string_value: "500".into(),
                 },
-            ],
+            }],
             start_time_nano: 0,
             end_time_nano: 100_000_000,
         };
@@ -560,12 +616,12 @@ mod tests {
             kind: SPAN_KIND_CLIENT,
             service_name: "svc".into(),
             status_code: 0,
-            attributes: vec![
-                OtelAttribute {
-                    key: "http.status_code".into(),
-                    value: OtelAttributeValue::StringValue { string_value: "200".into() },
+            attributes: vec![OtelAttribute {
+                key: "http.status_code".into(),
+                value: OtelAttributeValue::StringValue {
+                    string_value: "200".into(),
                 },
-            ],
+            }],
             start_time_nano: 0,
             end_time_nano: 100_000_000,
         };

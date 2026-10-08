@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,11 +26,13 @@ pub struct UnifiedEdge {
     pub target_id: String,
     pub source_service: String,
     pub source_method: Option<String>,
+    pub source_confidence: Option<f64>,
     pub target_service: String,
     pub target_method: Option<String>,
+    pub target_confidence: Option<f64>,
     pub target_file: Option<String>,
     pub target_line: Option<usize>,
-    pub span_id: Option<String>,
+    pub trace_id: Option<String>,
     pub error: bool,
     pub latency_ms: f64,
     pub call_count: usize,
@@ -44,6 +46,12 @@ pub struct UnifiedGraph {
     pub total_traces: usize,
     pub error_traces: usize,
     pub services: Vec<String>,
+}
+
+impl Default for UnifiedGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UnifiedGraph {
@@ -72,7 +80,12 @@ impl UnifiedGraph {
     }
 
     pub fn add_method_node(
-        &mut self, service: &str, class: &str, method: &str, file: &str, line: usize,
+        &mut self,
+        service: &str,
+        class: &str,
+        method: &str,
+        file: &str,
+        line: usize,
         error_count: usize,
     ) -> String {
         let id = format!("method:{}:{}.{}", service, class, method);
@@ -94,14 +107,19 @@ impl UnifiedGraph {
     }
 
     pub fn to_dot(&self) -> String {
-        let mut dot = String::from("digraph UnifiedGraph {\n  rankdir=LR;\n  node [shape=box style=rounded];\n\n");
+        let mut dot = String::from(
+            "digraph UnifiedGraph {\n  rankdir=LR;\n  node [shape=box style=rounded];\n\n",
+        );
 
         for node in self.nodes.values() {
             let label = match &node.kind {
                 UnifiedNodeKind::Service => {
                     let svc = node.service.as_deref().unwrap_or("?");
                     if node.error_count > 0 {
-                        format!("{} [color=red label=\"{}\\nerrors: {}\"]", node.id, svc, node.error_count)
+                        format!(
+                            "{} [color=red label=\"{}\\nerrors: {}\"]",
+                            node.id, svc, node.error_count
+                        )
                     } else {
                         format!("{} [label=\"{}\"]", node.id, svc)
                     }
@@ -111,26 +129,48 @@ impl UnifiedGraph {
                     let m = node.method.as_deref().unwrap_or("?");
                     let fl = node.file.as_deref().unwrap_or("?");
                     let ln = node.line.unwrap_or(0);
-                    format!("{} [shape=note label=\"{}.{}\\n{}:{}\"]", node.id, cls, m, fl, ln)
+                    format!(
+                        "{} [shape=note label=\"{}.{}\\n{}:{}\"]",
+                        node.id, cls, m, fl, ln
+                    )
                 }
             };
             dot.push_str(&format!("  {};\n", label));
         }
-        dot.push_str("\n");
+        dot.push('\n');
 
         for edge in &self.edges {
-            let color = if edge.error { "color=red" } else { "color=blue" };
+            let color = if edge.error {
+                "color=red"
+            } else {
+                "color=blue"
+            };
+            let src_conf = edge
+                .source_confidence
+                .map(|c| format!(" c={:.2}", c))
+                .unwrap_or_default();
+            let tgt_conf = edge
+                .target_confidence
+                .map(|c| format!(" c={:.2}", c))
+                .unwrap_or_default();
             let label = format!(
-                "calls: {} errors: {} {:.0}ms",
+                "calls: {} errors: {} {:.0}ms | src{} tgt{}",
                 edge.call_count,
                 if edge.error { 1 } else { 0 },
                 edge.latency_ms,
+                src_conf,
+                tgt_conf,
             );
-            if edge.target_file.is_some() {
+            // Only the file portion of "path:line" when a path is known: an
+            // empty file string previously produced a bare ":14".
+            if let Some(file) = edge.target_file.as_deref().filter(|f| !f.is_empty()) {
                 dot.push_str(&format!(
                     "  \"{}\" -> \"{}\" [{} label=\"{}\\n{}:{}\"];\n",
-                    edge.source_id, edge.target_id, color, label,
-                    edge.target_file.as_deref().unwrap_or(""),
+                    edge.source_id,
+                    edge.target_id,
+                    color,
+                    label,
+                    file,
                     edge.target_line.unwrap_or(0),
                 ));
             } else {
@@ -198,11 +238,13 @@ mod tests {
             target_id: "method:B:Y.bar".into(),
             source_service: "A".into(),
             source_method: Some("foo".into()),
+            source_confidence: Some(0.95),
             target_service: "B".into(),
             target_method: Some("bar".into()),
+            target_confidence: Some(0.85),
             target_file: Some("y.cs".into()),
             target_line: Some(2),
-            span_id: None,
+            trace_id: None,
             error: false,
             latency_ms: 150.0,
             call_count: 5,

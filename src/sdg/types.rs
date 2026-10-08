@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceNode {
@@ -55,6 +55,12 @@ pub struct ServiceGraph {
     pub error_traces: usize,
 }
 
+impl Default for ServiceGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceGraph {
     pub fn new() -> Self {
         ServiceGraph {
@@ -82,6 +88,7 @@ impl ServiceGraph {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_edge(
         &mut self,
         source: &str,
@@ -98,7 +105,8 @@ impl ServiceGraph {
         self.add_endpoint(target, target_endpoint);
 
         if let Some(edge) = self.edges.iter_mut().find(|e| {
-            e.source == source && e.target == target
+            e.source == source
+                && e.target == target
                 && e.source_endpoint == source_endpoint
                 && e.target_endpoint == target_endpoint
         }) {
@@ -167,19 +175,31 @@ impl ServiceGraph {
     }
 
     pub fn to_dot(&self) -> String {
-        let mut dot = String::from("digraph SDG {\n  rankdir=LR;\n  node [shape=box style=rounded];\n\n");
+        let mut dot =
+            String::from("digraph SDG {\n  rankdir=LR;\n  node [shape=box style=rounded];\n\n");
         for (name, node) in &self.nodes {
-            let color = if node.error_count > 0 { "color=red penwidth=2" } else { "" };
+            let color = if node.error_count > 0 {
+                "color=red penwidth=2"
+            } else {
+                ""
+            };
             let extra = if node.error_count > 0 {
                 format!("\\nerrors: {}", node.error_count)
             } else {
                 String::new()
             };
-            dot.push_str(&format!("  {} [label=\"{}{}\" {}];\n", name, name, extra, color));
+            dot.push_str(&format!(
+                "  {} [label=\"{}{}\" {}];\n",
+                name, name, extra, color
+            ));
         }
-        dot.push_str("\n");
+        dot.push('\n');
         for edge in &self.edges {
-            let color = if edge.error_count > 0 { "color=red penwidth=2" } else { "color=blue" };
+            let color = if edge.error_count > 0 {
+                "color=red penwidth=2"
+            } else {
+                "color=blue"
+            };
             let err_info = if edge.error_count > 0 {
                 format!(" ERRORS:{}", edge.error_count)
             } else {
@@ -212,7 +232,15 @@ mod tests {
     #[test]
     fn test_add_edge_creates_nodes() {
         let mut g = ServiceGraph::new();
-        g.add_edge("CatalogAPI", "OrderingAPI", "GET /items", "POST /validate", false, 150.0, "trace1");
+        g.add_edge(
+            "CatalogAPI",
+            "OrderingAPI",
+            "GET /items",
+            "POST /validate",
+            false,
+            150.0,
+            "trace1",
+        );
         assert_eq!(g.nodes.len(), 2);
         assert!(g.nodes.contains_key("CatalogAPI"));
         assert!(g.nodes.contains_key("OrderingAPI"));
@@ -259,7 +287,15 @@ mod tests {
     #[test]
     fn test_to_dot_contains_nodes() {
         let mut g = ServiceGraph::new();
-        g.add_edge("CatalogAPI", "OrderingAPI", "GET /items", "POST /validate", false, 150.0, "t1");
+        g.add_edge(
+            "CatalogAPI",
+            "OrderingAPI",
+            "GET /items",
+            "POST /validate",
+            false,
+            150.0,
+            "t1",
+        );
         let dot = g.to_dot();
         assert!(dot.contains("CatalogAPI"));
         assert!(dot.contains("OrderingAPI"));
