@@ -16,12 +16,22 @@ use rmcp::{
 };
 use serde_json::Value;
 
-use tools::{BlastRadiusArgs, ExplainErrorArgs, FindMethodsArgs, RcaContext, ServicesArgs};
+use tools::{
+    BlastRadiusArgs, ExplainErrorArgs, FindMethodsArgs, IngestLogsArgs, RcaContext, SearchLogsArgs,
+    ServicesArgs,
+};
 
 #[derive(Debug)]
 pub struct TraceLinkServer {
     tool_router: ToolRouter<TraceLinkServer>,
     ctx: Arc<RcaContext>,
+    /// Log store, opened on first use.
+    ///
+    /// Lazy because most sessions never ask about logs, and opening a database
+    /// nobody queries is work for nothing. Behind a mutex because the underlying
+    /// connection is `Send` but not `Sync`.
+    logs: std::sync::Mutex<Option<crate::sdg::log_store::LogStore>>,
+    log_store_path: PathBuf,
 }
 
 impl Default for TraceLinkServer {
@@ -34,9 +44,11 @@ impl Default for TraceLinkServer {
 impl TraceLinkServer {
     /// Open a prebuilt index. Fails with build instructions if it is missing.
     pub fn new(index_path: PathBuf) -> anyhow::Result<Self> {
-        Ok(Self::with_context(tools::open_context(
-            index_path.as_path(),
-        )?))
+        let log_store_path = tools::default_log_store_path(index_path.as_path());
+        Ok(Self::with_context_and_logs(
+            tools::open_context(index_path.as_path())?,
+            log_store_path,
+        ))
     }
 
     /// Build a server around an already-open index.
@@ -44,10 +56,55 @@ impl TraceLinkServer {
     /// Streamable HTTP creates one server per session; they must share the index
     /// rather than each reparsing, which is the whole reason the index exists.
     pub fn with_context(ctx: std::sync::Arc<tools::RcaContext>) -> Self {
+        let log_store_path = tools::default_log_store_path(ctx.path.as_path());
+        Self::with_context_and_logs(ctx, log_store_path)
+    }
+
+    /// Build a server with an explicit log store location.
+    pub fn with_context_and_logs(
+        ctx: std::sync::Arc<tools::RcaContext>,
+        log_store_path: PathBuf,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             ctx,
+            logs: std::sync::Mutex::new(None),
+            log_store_path,
         }
+    }
+
+    /// Lock the log store, opening it on first use.
+    ///
+    /// Returns the guard over the slot rather than over the store: `MutexGuard::map`
+    /// is still unstable, and hand-rolling a newtype to work around that would cost
+    /// more than the one unwrap at each call site.
+    fn log_store_slot(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<crate::sdg::log_store::LogStore>>, McpError> {
+        use crate::sdg::log_store::{LogStore, LogStorePath};
+
+        let mut guard = self
+            .logs
+            .lock()
+            .map_err(|_| McpError::internal_error("log store lock poisoned", None))?;
+        if guard.is_none() {
+            let store =
+                LogStore::open(LogStorePath::File(self.log_store_path.clone())).map_err(|e| {
+                    McpError::internal_error(
+                        format!(
+                            "cannot open log store at {}: {e:#}",
+                            self.log_store_path.display()
+                        ),
+                        None,
+                    )
+                })?;
+            *guard = Some(store);
+        }
+        Ok(guard)
+    }
+
+    fn log_store_error() -> McpError {
+        McpError::internal_error("log store unavailable after opening", None)
     }
 
     #[tool(
@@ -117,6 +174,40 @@ impl TraceLinkServer {
     ) -> Result<String, McpError> {
         wrap(tools::list_indexed_services(&self.ctx, args.0))
     }
+
+    /// Load OTLP log payloads into the log store.
+    #[tool(
+        name = "ingest_logs",
+        description = "Read OTLP log payloads (protobuf or JSON, gzipped or not) into the log store. Pass a payload file or a directory containing one payload per file. Returns how many records, traces and services arrived plus any problems, such as a payload with no service.name. Run this before search_logs.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn ingest_logs(&self, args: Parameters<IngestLogsArgs>) -> Result<String, McpError> {
+        let mut slot = self.log_store_slot()?;
+        let store = slot.as_mut().ok_or_else(Self::log_store_error)?;
+        wrap(tools::ingest_logs(store, args.0))
+    }
+
+    /// Search the ingested logs.
+    #[tool(
+        name = "search_logs",
+        description = "Search ingested logs by trace id, service, minimum severity, free text or attribute key. Free text matches attribute values as well as the body, which matters because the .NET exporter sends the unrendered message template as the body. Combine trace_id with explain_error to read what a failing request actually logged. Reports total_matched, has_more, and how many records were excluded for lacking a timestamp or trace id.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn search_logs(&self, args: Parameters<SearchLogsArgs>) -> Result<String, McpError> {
+        let slot = self.log_store_slot()?;
+        let store = slot.as_ref().ok_or_else(Self::log_store_error)?;
+        wrap(tools::search_logs(store, args.0))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -155,7 +246,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn router_registers_the_four_link_tools() {
+    fn router_registers_the_link_and_log_tools() {
         let router = TraceLinkServer::tool_router();
         let names: Vec<String> = router
             .list_all()
@@ -167,21 +258,32 @@ mod tests {
             "blast_radius",
             "find_methods",
             "list_indexed_services",
+            "ingest_logs",
+            "search_logs",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
-        assert_eq!(names.len(), 4, "unexpected tool set: {names:?}");
+        assert_eq!(names.len(), 6, "unexpected tool set: {names:?}");
     }
 
     #[test]
-    fn every_tool_is_read_only_and_documented() {
+    fn every_tool_is_documented_and_flags_whether_it_writes() {
+        // `ingest_logs` writes to the log store. Claiming otherwise would let a
+        // client that gates on the annotation skip the approval it needs.
+        const WRITES: [&str; 1] = ["ingest_logs"];
+
         let router = TraceLinkServer::tool_router();
         for tool in router.list_all() {
             let annotations = tool
                 .annotations
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} has no annotations", tool.name));
-            assert_eq!(annotations.read_only_hint, Some(true), "{}", tool.name);
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(!WRITES.contains(&tool.name.as_ref())),
+                "{}",
+                tool.name
+            );
             let description = tool.description.as_deref().unwrap_or("");
             assert!(description.len() > 40, "{} needs a description", tool.name);
             assert!(

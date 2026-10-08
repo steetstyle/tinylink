@@ -189,3 +189,137 @@ fn scope_attributes_are_available_for_filtering() {
     );
     assert_eq!(r.attributes.get("SpanId").is_some(), true, "{r:?}");
 }
+
+// ── the store, fed the same capture ──
+
+/// The whole path, on real bytes: ingest, then the three queries an incident
+/// actually starts with.
+///
+/// These are the questions someone asks in order — what blew up, what did the
+/// failing request log on its way in, and what else was broken in the same
+/// window — so the queries are written as those questions rather than as filter
+/// permutations.
+#[test]
+fn the_capture_answers_the_questions_an_incident_asks() {
+    use tinylink::sdg::log::Severity;
+    use tinylink::sdg::log_store::{LogQuery, LogStore};
+
+    let mut store = LogStore::temporary("capture").expect("store");
+    let report = store
+        .insert_bytes(include_bytes!("fixtures/otlp-logs-capture.bin"))
+        .expect("ingest");
+    assert_eq!(report.inserted, 8, "{report:?}");
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!(store.services().unwrap(), vec!["Agency.API"]);
+
+    // 1. What blew up?
+    let errors = store
+        .query(&LogQuery {
+            min_severity: Some(Severity::Error),
+            limit: 10,
+            ..Default::default()
+        })
+        .expect("query");
+    assert_eq!(errors.matches.len(), 2, "{errors:?}");
+
+    // 2. What did the failing request log on its way in? Take one error's trace.
+    let failing_trace = errors.matches[0]
+        .record
+        .trace_id()
+        .expect("an error should be traceable")
+        .to_string();
+    let request = store
+        .query(&LogQuery {
+            trace_id: Some(failing_trace.clone()),
+            limit: 50,
+            ..Default::default()
+        })
+        .expect("query");
+    assert_eq!(
+        request.matches.len(),
+        4,
+        "the whole request should come back, not just the error: {request:?}"
+    );
+
+    // 3. Now the part a body-only search gets wrong. The interpolated value is
+    //    only in an attribute, and that is the string an operator pastes in.
+    let by_value = store
+        .query(&LogQuery {
+            contains: Some("GetAgencyMembers".into()),
+            min_severity: Some(Severity::Error),
+            limit: 10,
+            ..Default::default()
+        })
+        .expect("query");
+    // Both exports logged the same failure, so both come back — which is the point:
+    // the search reaches across exports instead of only the one being examined.
+    assert_eq!(
+        by_value.matches.len(),
+        2,
+        "an attribute value must be findable by text: {by_value:?}"
+    );
+    assert!(by_value
+        .matches
+        .iter()
+        .all(|m| m.record.attributes.get("exception.type")
+            == Some(&"InvalidOperationException".to_string())));
+    assert_eq!(
+        by_value.traces().len(),
+        2,
+        "and they are two distinct traces: {:?}",
+        by_value.traces()
+    );
+}
+
+/// Filter by attribute key, which is how a caller narrows to one structured field
+/// such as `exception.type` without knowing its value.
+#[test]
+fn records_can_be_found_by_attribute_key() {
+    use tinylink::sdg::log_store::{LogQuery, LogStore};
+
+    let mut store = LogStore::temporary("attrkey").expect("store");
+    store
+        .insert_bytes(include_bytes!("fixtures/otlp-logs-capture.bin"))
+        .expect("ingest");
+
+    let stacktraces = store
+        .query(&LogQuery {
+            attribute_key: Some("exception.stacktrace".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .expect("query");
+    // Two errors, one per export.
+    assert_eq!(stacktraces.matches.len(), 2, "{stacktraces:?}");
+    assert!(stacktraces.matches.iter().all(|m| m
+        .record
+        .attributes
+        .get("exception.stacktrace")
+        .is_some()));
+}
+
+/// A time window that predates the capture must come back empty *and* say the
+/// store is not empty, so "no logs in that window" is distinguishable from "no
+/// logs at all".
+#[test]
+fn an_empty_time_window_is_distinguishable_from_an_empty_store() {
+    use tinylink::sdg::log_store::{LogQuery, LogStore};
+
+    let mut store = LogStore::temporary("window").expect("store");
+    store
+        .insert_bytes(include_bytes!("fixtures/otlp-logs-capture.bin"))
+        .expect("ingest");
+
+    let out = store
+        .query(&LogQuery {
+            since_unix_nano: Some(1),
+            until_unix_nano: Some(2),
+            limit: 10,
+            ..Default::default()
+        })
+        .expect("query");
+    assert!(out.matches.is_empty());
+    assert_eq!(out.total_matched, 0);
+    assert_eq!(out.scanned, 8, "the store does hold records");
+    assert_eq!(out.untimed, 0, "every record in the capture is timestamped");
+}

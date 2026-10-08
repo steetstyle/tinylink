@@ -165,7 +165,7 @@ const FAILING_TRACE: &str = r#"{"resourceSpans":[
 ]}"#;
 
 #[test]
-fn handshake_lists_four_read_only_tools_with_schemas() {
+fn handshake_lists_every_tool_with_a_schema_and_an_honest_read_only_flag() {
     let (root, db) = setup("tools");
     let mut mcp = McpProcess::start(&db);
 
@@ -177,17 +177,24 @@ fn handshake_lists_four_read_only_tools_with_schemas() {
         "blast_radius",
         "find_methods",
         "list_indexed_services",
+        "ingest_logs",
+        "search_logs",
     ] {
         assert!(names.contains(&expected), "missing {expected} in {names:?}");
     }
-    assert_eq!(tools.len(), 4, "unexpected tool set: {names:?}");
+    assert_eq!(tools.len(), 6, "unexpected tool set: {names:?}");
 
+    // ingest_logs writes to the log store, so it must not claim to be read-only.
+    // A client that trusts the flag to decide whether a call needs approval would
+    // otherwise let a state change through unprompted.
+    let writes_state = ["ingest_logs"];
     for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        let expected_read_only = !writes_state.contains(&name);
         assert_eq!(
             tool["annotations"]["readOnlyHint"],
-            json!(true),
-            "{} must be read-only",
-            tool["name"]
+            json!(expected_read_only),
+            "{name} has the wrong read-only annotation"
         );
         assert!(tool["description"].as_str().unwrap().len() > 40);
         assert!(
@@ -284,5 +291,153 @@ fn server_refuses_to_start_without_an_index() {
     assert!(
         stderr.contains("tinylink index"),
         "startup error should say how to build one: {stderr}"
+    );
+}
+
+// ── logs, over the protocol ──
+
+/// The capture is the raw body of two real OTLP/protobuf exports from the
+/// OpenTelemetry .NET SDK, so this exercises the wire format an agent will meet
+/// rather than a payload written to suit the parser.
+fn capture_payload(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("agency-logs.bin");
+    std::fs::write(&path, include_bytes!("fixtures/otlp-logs-capture.bin")).unwrap();
+    path
+}
+
+#[test]
+fn ingest_then_search_logs_over_the_protocol() {
+    let (root, db) = setup("logs");
+    let mut mcp = McpProcess::start(&db);
+    let payload = capture_payload(&root);
+
+    let ingested = mcp.tool_json("ingest_logs", json!({ "source": payload }));
+    assert_eq!(ingested["records_inserted"], 8, "{ingested}");
+    assert_eq!(ingested["payloads_read"], 1, "{ingested}");
+    assert_eq!(ingested["distinct_traces"], 2, "{ingested}");
+    assert_eq!(ingested["services"][0], "Agency.API", "{ingested}");
+
+    // What blew up.
+    let errors = mcp.tool_json(
+        "search_logs",
+        json!({ "min_severity": "Error", "limit": 10 }),
+    );
+    assert_eq!(errors["count"], 2, "{errors}");
+    assert_eq!(errors["store_records"], 8, "{errors}");
+    assert_eq!(
+        errors["logs"][0]["attributes"]["exception.type"], "InvalidOperationException",
+        "{errors}"
+    );
+
+    // Free text that only exists in an attribute — the case a body-only search
+    // silently misses.
+    let by_value = mcp.tool_json(
+        "search_logs",
+        json!({ "contains": "GetAgencyMembers", "limit": 10 }),
+    );
+    assert_eq!(by_value["count"], 2, "{by_value}");
+
+    // The whole request for one failing trace.
+    let trace = errors["logs"][0]["trace_id"].as_str().unwrap().to_string();
+    let request = mcp.tool_json("search_logs", json!({ "trace_id": trace, "limit": 50 }));
+    assert_eq!(request["count"], 4, "{request}");
+    assert_eq!(
+        request["traces_in_page"].as_array().map(Vec::len),
+        Some(1),
+        "{request}"
+    );
+
+    // The join the whole thing exists for. The trace tool names the failing
+    // handler and line; the log tool names what that request actually logged.
+    // Neither is derivable from the other.
+    let explained = mcp.tool_json("explain_error", json!({ "trace": FAILING_TRACE }));
+    let edge = &explained["error_edges"][0];
+    assert_eq!(
+        edge["to"]["method"], "GetMembersEndpoint.Handler",
+        "{explained}"
+    );
+    assert_eq!(edge["to"]["line"], 5, "{explained}");
+    assert_eq!(edge["trace_ids"][0], "t-e2e", "{explained}");
+
+    let logged = mcp.tool_json(
+        "search_logs",
+        json!({ "contains": "exception.stacktrace", "limit": 10 }),
+    );
+    assert_eq!(logged["count"], 2, "{logged}");
+}
+
+/// An empty result has to be explainable. Without `store_records` an agent cannot
+/// tell "nothing matched" from "no logs were ever ingested".
+#[test]
+fn an_empty_log_search_reports_what_the_store_holds() {
+    let (root, db) = setup("logs_empty");
+    let mut mcp = McpProcess::start(&db);
+
+    let out = mcp.tool_json("search_logs", json!({ "limit": 10 }));
+    assert_eq!(out["count"], 0, "{out}");
+    assert_eq!(out["store_records"], 0, "{out}");
+    // With no filter at all, the only honest answer is "nothing is stored", and
+    // the service list has to say so.
+    assert_eq!(
+        out["available_services"].as_array().map(Vec::is_empty),
+        Some(true),
+        "{out}"
+    );
+}
+
+#[test]
+fn search_logs_rejects_an_unknown_severity_by_name() {
+    let (root, db) = setup("logs_sev");
+    let mut mcp = McpProcess::start(&db);
+
+    // `Critical` is deliberately not the input: .NET's LogLevel.Critical maps onto
+    // Fatal and is accepted. The point is a name with no mapping at all.
+    let result = mcp.call("search_logs", json!({ "min_severity": "catastrophic" }));
+    let message = result["error"]["message"]
+        .as_str()
+        .expect("an error message");
+    assert!(
+        message.contains("Trace") && message.contains("Fatal"),
+        "the error should list the valid names: {message}"
+    );
+}
+
+#[test]
+fn ingest_logs_reports_a_missing_source_instead_of_creating_an_empty_store() {
+    let (_root, db) = setup("logs_missing");
+    let mut mcp = McpProcess::start(&db);
+
+    let result = mcp.call("ingest_logs", json!({ "source": "/nonexistent/payloads" }));
+    let message = result["error"]["message"]
+        .as_str()
+        .expect("an error message");
+    assert!(message.contains("does not exist"), "{message}");
+}
+
+/// One payload per file, and a bad file must not cost the good ones. This is the
+/// ordinary case of pointing `ingest_logs` at a directory of collector dumps.
+#[test]
+fn ingesting_a_directory_reports_a_bad_file_and_keeps_the_rest() {
+    let (root, db) = setup("logs_dir");
+    let mut mcp = McpProcess::start(&db);
+
+    let dir = root.join("payloads");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("a-good.bin"),
+        include_bytes!("fixtures/otlp-logs-capture.bin"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("b-broken.json"), b"{ not json").unwrap();
+
+    let out = mcp.tool_json("ingest_logs", json!({ "source": dir }));
+    assert_eq!(out["records_inserted"], 8, "{out}");
+    assert_eq!(out["payloads_read"], 1, "{out}");
+    let problems = out["problems"].as_array().expect("problems");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("b-broken")),
+        "{out}"
     );
 }

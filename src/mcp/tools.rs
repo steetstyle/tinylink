@@ -8,7 +8,7 @@
 //! Code-only questions ("who calls this", "what does this PDG look like") belong
 //! to the tiny-pdg-cs MCP server. This one exists for the join between the two.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use crate::link::builder;
 use crate::link::index::{self, Index};
 use crate::link::mapper;
+use crate::sdg::log_store::{LogQuery, LogStore};
 use crate::sdg::otel;
 
 /// An opened index, held for the server's lifetime.
@@ -654,4 +655,158 @@ public class GetMembersEndpoint
         let message = format!("{:#}", err);
         assert!(message.contains("tinylink index"), "{message}");
     }
+}
+
+// ───────────────────────── logs ─────────────────────────
+
+/// Where a log store lives when the caller does not say.
+///
+/// Environment first so a deployment can point it at a mounted volume, then the
+/// directory holding the code index, so the store and the index stay together and
+/// a relative invocation still finds the logs it just ingested.
+pub fn default_log_store_path(index_path: &Path) -> PathBuf {
+    if let Ok(from_env) = std::env::var("TINYLINK_LOG_STORE") {
+        return PathBuf::from(from_env);
+    }
+    let mut path = index_path.to_path_buf();
+    path.set_extension("logs.db");
+    path
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct IngestLogsArgs {
+    /// An OTLP payload file, or a directory of them (one payload per file).
+    ///
+    /// A directory is walked one level deep. Several protobuf exports concatenated
+    /// into a single stream cannot be split reliably — OTLP carries no total
+    /// length — so one payload per file is required rather than guessed at.
+    pub source: String,
+}
+
+/// Read OTLP log payloads into the store.
+///
+/// Kept separate from querying because ingest is the step that needs explaining:
+/// a payload with no `service.name`, or a file that is not a payload at all, both
+/// have to be visible rather than turning into a mysteriously small result.
+pub fn ingest_logs(store: &mut LogStore, args: IngestLogsArgs) -> Result<Value, String> {
+    let source = Path::new(&args.source);
+    if !source.exists() {
+        return Err(format!(
+            "path does not exist: {} — pass an OTLP payload file or a directory of them",
+            source.display()
+        ));
+    }
+    let report = store
+        .insert_path(source)
+        .map_err(|e| format!("ingest failed for {}: {e:#}", source.display()))?;
+
+    Ok(json!({
+        "source": source.display().to_string(),
+        "records_inserted": report.inserted,
+        "payloads_read": report.payloads,
+        "distinct_traces": report.traces,
+        "distinct_services": report.services,
+        // Reported rather than swallowed: a missing service.name makes every
+        // later service filter silently return nothing.
+        "problems": report.skipped,
+        "store_records": store.len().map_err(|e| e.to_string())?,
+        "services": store.services().map_err(|e| e.to_string())?,
+    }))
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SearchLogsArgs {
+    /// Restrict to one trace. Case-insensitive.
+    pub trace_id: Option<String>,
+    /// Restrict to one service, exactly as the exporter named it
+    /// (`service.name`). Use `ingest_logs` or `search_logs` without this to see
+    /// what names are actually present.
+    pub service: Option<String>,
+    /// Minimum severity: `Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`.
+    /// Records whose severity cannot be determined never match.
+    pub min_severity: Option<String>,
+    /// Case-insensitive substring. Matched against the body *and* attribute
+    /// values, because the .NET exporter sends the unrendered message template as
+    /// the body — the interpolated values live in attributes, so a body-only
+    /// search would miss the exact string someone pastes during an incident.
+    pub contains: Option<String>,
+    /// Search attribute values only, ignoring the body.
+    pub attributes_only: Option<bool>,
+    /// Only records having an attribute with this key.
+    pub attribute_key: Option<String>,
+    /// Inclusive lower bound, Unix nanoseconds.
+    pub since_unix_nano: Option<u64>,
+    /// Exclusive upper bound, Unix nanoseconds.
+    pub until_unix_nano: Option<u64>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// Search the log store.
+///
+/// Every filter is independent; there are no presets. A response reports
+/// `total_matched` alongside the window, plus how many records the store holds
+/// and how many were excluded for lacking a timestamp or a trace id, so a short
+/// answer is never mistaken for the whole story.
+pub fn search_logs(store: &LogStore, args: SearchLogsArgs) -> Result<Value, String> {
+    let min_severity = match args.min_severity.as_deref() {
+        None => None,
+        Some(text) => {
+            let severity = crate::sdg::log::Severity::from_number(0, text);
+            if severity == crate::sdg::log::Severity::Unknown {
+                return Err(format!(
+                    "unknown severity {text:?}; use Trace, Debug, Info, Warn, Error or Fatal"
+                ));
+            }
+            Some(severity)
+        }
+    };
+
+    let limit = args.limit.unwrap_or(crate::sdg::log_store::MAX_LIMIT);
+    if limit == 0 {
+        return Err("limit must be at least 1".into());
+    }
+
+    let query = LogQuery {
+        trace_id: args.trace_id,
+        service: args.service,
+        min_severity,
+        contains: args.contains,
+        attributes_only: args.attributes_only.unwrap_or(false),
+        attribute_key: args.attribute_key,
+        since_unix_nano: args.since_unix_nano,
+        until_unix_nano: args.until_unix_nano,
+        only_traceable: false,
+        limit,
+        offset: args.offset.unwrap_or(0),
+    };
+
+    let result = store.query(&query).map_err(|e| e.to_string())?;
+
+    let logs: Vec<Value> = result
+        .matches
+        .iter()
+        .map(|m| {
+            let mut v = m.record.to_json();
+            v["service"] = json!(m.service);
+            v
+        })
+        .collect();
+
+    Ok(json!({
+        "logs": logs,
+        "count": result.matches.len(),
+        "total_matched": result.total_matched,
+        "offset": result.offset,
+        "has_more": result.truncated,
+        // Distinguishes "nothing matched" from "the store is empty" and from
+        // "records exist but carry no timestamp, so a time window excluded them".
+        "store_records": result.scanned,
+        "excluded_untimed": result.untimed,
+        "excluded_untraceable": result.untraceable,
+        "traces_in_page": result.traces(),
+        // Always present, so a wrong `service` guess is recoverable from the
+        // response instead of needing a separate discovery call.
+        "available_services": store.services().map_err(|e| e.to_string())?,
+    }))
 }

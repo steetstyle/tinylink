@@ -29,6 +29,8 @@ tree-sitter = "0.25"
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Stable content hash so an unchanged index is reused instead of reparsed.
 blake3 = "1"
+# Decompresses gzipped OTLP payloads, which is what the .NET SDK sends.
+flate2 = "1"
 # MCP server (`tinylink serve`). Pinned to the same rmcp/schemars versions as
 # tiny-pdg-cs so one client — and tiny-rca — can drive both.
 rmcp = { version = "3", features = ["server", "transport-io"], optional = true }
