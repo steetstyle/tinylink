@@ -79,11 +79,22 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Serve trace-to-code linking over MCP (stdio) for AI agents
+    /// Serve trace-to-code linking over MCP for AI agents
     Serve {
         /// Path to a prebuilt index (see `tinylink index`)
         #[arg(long, default_value = "tinylink.db")]
         index: String,
+        /// Serve over Streamable HTTP instead of stdio
+        #[arg(long)]
+        http: bool,
+        /// Bind address for --http (loopback by default; no authentication)
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Endpoint path for --http
+        #[arg(long, default_value = "mcp")]
+        path: String,
     },
     /// Generate PDG (Program Dependence Graph) DOT for a method
     Pdg {
@@ -169,7 +180,13 @@ fn main() {
             force,
             dry_run,
         } => tinylink::cli::commands::handle_index(&sources, &out, force, dry_run),
-        Commands::Serve { index } => serve(&index),
+        Commands::Serve {
+            index,
+            http,
+            bind,
+            port,
+            path,
+        } => serve(&index, http, bind, port, path),
     };
 
     if let Err(e) = result {
@@ -180,7 +197,42 @@ fn main() {
 
 /// Run the trace-to-code MCP server over stdio.
 #[cfg(feature = "mcp")]
-fn serve(index: &str) -> anyhow::Result<()> {
+/// Run the trace-to-code MCP server.
+///
+/// Stdio by default, which is what MCP clients launch. `--http` serves Streamable
+/// HTTP instead, for shared or remote deployments.
+#[cfg(feature = "mcp")]
+fn serve(
+    index: &str,
+    http: bool,
+    bind: std::net::IpAddr,
+    port: u16,
+    path: String,
+) -> anyhow::Result<()> {
+    if http {
+        return serve_http(bind, port, path, index);
+    }
+    serve_stdio(index)
+}
+
+#[cfg(all(feature = "mcp", not(feature = "mcp-http")))]
+fn serve_http(
+    _bind: std::net::IpAddr,
+    _port: u16,
+    _path: String,
+    _index: &str,
+) -> anyhow::Result<()> {
+    anyhow::bail!("`serve --http` requires the `mcp-http` feature: cargo build --features mcp-http")
+}
+
+#[cfg(feature = "mcp-http")]
+fn serve_http(bind: std::net::IpAddr, port: u16, path: String, index: &str) -> anyhow::Result<()> {
+    let args = tinylink::mcp::http::HttpArgs { bind, port, path };
+    tinylink::mcp::http::serve_http(args, std::path::Path::new(index))
+}
+
+#[cfg(feature = "mcp")]
+fn serve_stdio(index: &str) -> anyhow::Result<()> {
     use rmcp::transport::stdio;
     use rmcp::ServiceExt;
 
@@ -195,7 +247,15 @@ fn serve(index: &str) -> anyhow::Result<()> {
     })
 }
 
+/// The `mcp` feature is required for `serve`; keep the other commands usable
+/// without it.
 #[cfg(not(feature = "mcp"))]
-fn serve(_index: &str) -> anyhow::Result<()> {
+fn serve(
+    _index: &str,
+    _http: bool,
+    _bind: std::net::IpAddr,
+    _port: u16,
+    _path: String,
+) -> anyhow::Result<()> {
     anyhow::bail!("`serve` requires the `mcp` feature: cargo build --features mcp")
 }

@@ -3,6 +3,8 @@
 //! Requires a prebuilt index (`tinylink index ...`). See [`tools`] for the
 //! rationale behind separating trace data from indexed code.
 
+#[cfg(feature = "mcp-http")]
+pub mod http;
 pub mod tools;
 
 use std::path::PathBuf;
@@ -32,11 +34,20 @@ impl Default for TraceLinkServer {
 impl TraceLinkServer {
     /// Open a prebuilt index. Fails with build instructions if it is missing.
     pub fn new(index_path: PathBuf) -> anyhow::Result<Self> {
-        let ctx = tools::open_context(index_path.as_path())?;
-        Ok(Self {
+        Ok(Self::with_context(tools::open_context(
+            index_path.as_path(),
+        )?))
+    }
+
+    /// Build a server around an already-open index.
+    ///
+    /// Streamable HTTP creates one server per session; they must share the index
+    /// rather than each reparsing, which is the whole reason the index exists.
+    pub fn with_context(ctx: std::sync::Arc<tools::RcaContext>) -> Self {
+        Self {
             tool_router: Self::tool_router(),
             ctx,
-        })
+        }
     }
 
     #[tool(

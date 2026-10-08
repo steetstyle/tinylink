@@ -32,6 +32,9 @@ blake3 = "1"
 # MCP server (`tinylink serve`). Pinned to the same rmcp/schemars versions as
 # tiny-pdg-cs so one client — and tiny-rca — can drive both.
 rmcp = { version = "3", features = ["server", "transport-io"], optional = true }
+# Streamable HTTP transport for `serve --http`. The standalone SSE transport is
+# deprecated in the MCP spec and the SDK ships no server for it.
+axum = { version = "0.8", optional = true }
 schemars = { version = "1", optional = true }
 
 [dev-dependencies]
@@ -43,6 +46,7 @@ default = ["online"]
 online = ["reqwest", "tokio"]
 # `serve` needs a tokio runtime; the index and CLI paths do not.
 mcp = ["dep:rmcp", "dep:schemars"]
+mcp-http = ["mcp", "rmcp/transport-streamable-http-server", "dep:axum"]
 
 [[bench]]
 name = "bench_sdg"
