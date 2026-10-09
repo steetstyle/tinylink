@@ -79,7 +79,7 @@ pub fn explain_error(ctx: &RcaContext, args: ExplainErrorArgs) -> Result<Value, 
     let mut reported: Vec<Value> = Vec::new();
     // Most errored first: the likely culprit is where errors concentrate.
     let mut ranked: Vec<_> = errors.iter().collect();
-    ranked.sort_by(|a, b| b.error_count.cmp(&a.error_count));
+    ranked.sort_by_key(|a| std::cmp::Reverse(a.error_count));
 
     let limit = args.limit.unwrap_or(20).max(1);
     for edge in ranked.into_iter().take(limit) {

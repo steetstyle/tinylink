@@ -3,6 +3,11 @@
 //! Drives the real binary over stdio JSON-RPC against a real index built from
 //! real C# sources: handshake, tool listing, and the trace→code join. The unit
 //! tests cover the tool functions; this covers the wiring an agent meets first.
+// Gated on the `mcp` feature rather than skipped at runtime. `serve` does not exist
+// without it, so every test in here would fail rather than skip, and CI runs the suite
+// both with and without default features. Compiling the file away means `cargo test`
+// is green under any feature set, and the tests still run wherever the server is built.
+#![cfg(feature = "mcp")]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -370,7 +375,7 @@ fn ingest_then_search_logs_over_the_protocol() {
 /// tell "nothing matched" from "no logs were ever ingested".
 #[test]
 fn an_empty_log_search_reports_what_the_store_holds() {
-    let (root, db) = setup("logs_empty");
+    let (_root, db) = setup("logs_empty");
     let mut mcp = McpProcess::start(&db);
 
     let out = mcp.tool_json("search_logs", json!({ "limit": 10 }));
@@ -387,7 +392,7 @@ fn an_empty_log_search_reports_what_the_store_holds() {
 
 #[test]
 fn search_logs_rejects_an_unknown_severity_by_name() {
-    let (root, db) = setup("logs_sev");
+    let (_root, db) = setup("logs_sev");
     let mut mcp = McpProcess::start(&db);
 
     // `Critical` is deliberately not the input: .NET's LogLevel.Critical maps onto

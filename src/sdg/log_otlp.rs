@@ -665,7 +665,7 @@ mod tests {
                 0 => {
                     let mut v = *payload.first().expect("varint needs a byte");
                     while v >= 0x80 {
-                        out.push((v as u8) | 0x80);
+                        out.push(v | 0x80);
                         v >>= 7;
                     }
                     out.push(v);

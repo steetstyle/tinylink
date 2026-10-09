@@ -187,7 +187,7 @@ fn scope_attributes_are_available_for_filtering() {
         Some(&"agency".to_string()),
         "{r:?}"
     );
-    assert_eq!(r.attributes.get("SpanId").is_some(), true, "{r:?}");
+    assert!(r.attributes.contains_key("SpanId"), "{r:?}");
 }
 
 // ── the store, fed the same capture ──
@@ -291,11 +291,10 @@ fn records_can_be_found_by_attribute_key() {
         .expect("query");
     // Two errors, one per export.
     assert_eq!(stacktraces.matches.len(), 2, "{stacktraces:?}");
-    assert!(stacktraces.matches.iter().all(|m| m
-        .record
-        .attributes
-        .get("exception.stacktrace")
-        .is_some()));
+    assert!(stacktraces
+        .matches
+        .iter()
+        .all(|m| m.record.attributes.contains_key("exception.stacktrace")));
 }
 
 /// A time window that predates the capture must come back empty *and* say the

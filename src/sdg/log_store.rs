@@ -1182,11 +1182,10 @@ mod json_tests {
     use super::*;
 
     fn seeded() -> LogStore {
-        let store = store_with(vec![
+        store_with(vec![
             record("Handler {Name} failed", Severity::Error, Some("T1")),
             record("all quiet", Severity::Info, Some("T1")),
-        ]);
-        store
+        ])
     }
 
     #[test]
