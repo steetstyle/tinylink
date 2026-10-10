@@ -347,18 +347,68 @@ fn resolve_log_store(store: Option<&str>) -> std::path::PathBuf {
         Some(path) => std::path::PathBuf::from(path),
         None => match std::env::var("TINYLINK_LOG_STORE") {
             Ok(path) if !path.is_empty() => std::path::PathBuf::from(path),
-            _ => std::path::PathBuf::from("tinylink.logs.db"),
+            _ => std::path::PathBuf::from(DEFAULT_LOG_STORE),
         },
+    }
+}
+
+/// Where `logs-ingest` and `logs-search` write and read when nothing says otherwise.
+///
+/// Kept next to `resolve_log_store` so the warning below and the path it names come
+/// from one place.
+const DEFAULT_LOG_STORE: &str = "tinylink.logs.db";
+
+/// Say what a server would read, when this write is not where a server reads.
+///
+/// The two defaults are genuinely different and neither is wrong on its own: `ingest`
+/// has no index to derive from, so it writes beside the working directory, while
+/// `serve` has one and so writes beside it. Used together with no `--store` and no
+/// `TINYLINK_LOG_STORE`, they never meet -- measured, after ingesting 29,347 records
+/// into `./tinylink.logs.db` and searching a store derived from the index, which
+/// answered that the log store was empty.
+fn warn_about_a_server_that_reads_elsewhere(store: Option<&str>, written: &std::path::Path) {
+    let named_by_user =
+        store.is_some() || std::env::var("TINYLINK_LOG_STORE").is_ok_and(|v| !v.is_empty());
+    let default = std::path::Path::new(DEFAULT_LOG_STORE);
+
+    if written == default && !named_by_user {
+        eprintln!(
+            "note: wrote {}. A server started with `tinylink serve --index <path>` reads \
+             <path>.logs.db instead -- beside its index, not beside the working \
+             directory -- so it will report an empty store. Name one place and set it \
+             for both: export TINYLINK_LOG_STORE={}",
+            written.display(),
+            written.display()
+        );
+    } else if !named_by_user {
+        eprintln!(
+            "note: wrote {}. A server reads the store beside its index unless \
+             TINYLINK_LOG_STORE says otherwise, so check that `tinylink serve` was \
+             started with --index {} (or that both sides set TINYLINK_LOG_STORE).",
+            written.display(),
+            written.with_extension("db").display()
+        );
     }
 }
 
 fn logs_ingest(source: &str, store: Option<&str>) -> anyhow::Result<()> {
     use tinylink::sdg::log_store::{LogStore, LogStorePath};
 
+    // `store` the argument is shadowed by the LogStore below, and the warning needs to
+    // know whether the caller named a path.
+    let asked_for = store;
     let path = resolve_log_store(store);
     let mut store = LogStore::open(LogStorePath::File(path.clone()))?;
     let report = store.insert_path(std::path::Path::new(source))?;
 
+    warn_about_a_server_that_reads_elsewhere(asked_for, &path);
+    if report.duplicates > 0 {
+        eprintln!(
+            "note: {} record(s) were already in the store and were not added again \
+             (records_inserted: {}).",
+            report.duplicates, report.inserted
+        );
+    }
     println!(
         "Ingested {} record(s) from {} payload(s) into {}",
         report.inserted,

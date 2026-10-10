@@ -206,7 +206,7 @@ impl TraceLinkServer {
     pub async fn search_logs(&self, args: Parameters<SearchLogsArgs>) -> Result<String, McpError> {
         let slot = self.log_store_slot()?;
         let store = slot.as_ref().ok_or_else(Self::log_store_error)?;
-        wrap(tools::search_logs(store, args.0))
+        wrap(tools::search_logs(store, &self.log_store_path, args.0))
     }
 }
 

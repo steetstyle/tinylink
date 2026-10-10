@@ -40,7 +40,37 @@ use super::log_otlp::{parse_json, parse_protobuf, LogBatch};
 
 /// Bumped when the layout changes; a mismatch discards the store rather than
 /// reading it with the wrong expectations.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// A stable identity for one stored log record.
+///
+/// Every stored field goes in, separated so that concatenation cannot collide across
+/// boundaries -- `("ab", "c")` and `("a", "bc")` must not hash the same. Lengths are
+/// folded in for the same reason.
+fn fingerprint(
+    observed: u64,
+    service: &str,
+    trace: Option<&str>,
+    span: Option<&str>,
+    severity: u32,
+    body: &str,
+    attributes: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for part in [
+        observed.to_string(),
+        service.to_string(),
+        trace.unwrap_or_default().to_string(),
+        span.unwrap_or_default().to_string(),
+        severity.to_string(),
+        body.to_string(),
+        attributes.to_string(),
+    ] {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
 
 /// Where to keep the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +96,12 @@ pub struct LogStore {
 pub struct IngestReport {
     /// Records written.
     pub inserted: usize,
+    /// Records already in the store, skipped because they are byte-identical.
+    ///
+    /// Reported rather than silently dropped, and not folded into `inserted`: ingesting
+    /// the same payload twice is a normal thing to do after a failure, and an answer of
+    /// "Ingested 29347 record(s)" on the second run says the opposite of what happened.
+    pub duplicates: usize,
     /// Files or payloads read.
     pub payloads: usize,
     /// Distinct trace ids among the inserted records.
@@ -146,6 +182,11 @@ impl LogStore {
 
         if version.is_some() && version != Some(SCHEMA_VERSION) {
             // A stale layout is worse than none: drop it rather than misread it.
+            // v2 added the fingerprint column, so a v1 store is emptied on open and has
+            // to be re-ingested. That is a deliberate trade: the store is derived from
+            // OTLP payloads and re-ingestable, while a migration that guessed would
+            // have to invent fingerprints for records it cannot recompute -- which is
+            // exactly the guess that makes dedup wrong.
             for table in ["logs", "meta"] {
                 self.conn
                     .execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
@@ -169,11 +210,17 @@ impl LogStore {
                  body              TEXT NOT NULL,
                  attributes        TEXT NOT NULL,
                  attributes_text   TEXT NOT NULL,
-                 search_text       TEXT NOT NULL
+                 search_text       TEXT NOT NULL,
+                 -- Stable content hash, and the reason a store does not double when the
+                 -- same payload is ingested twice. Measured: 29,347 records ingested,
+                 -- the same payload again, and the store held 58,694 -- every count
+                 -- downstream wrong afterwards, with nothing saying it had happened.
+                 fingerprint       TEXT NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_logs_trace   ON logs(trace_id);
              CREATE INDEX IF NOT EXISTS idx_logs_service ON logs(service, observed_unix_nano);
-             CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity_number);",
+             CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity_number);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_fingerprint ON logs(fingerprint);",
         )?;
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?1)",
@@ -223,11 +270,13 @@ impl LogStore {
 
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO logs (
+                // OR IGNORE, not OR REPLACE: on a fingerprint collision the record is
+                // already there, and re-inserting it would only change its id.
+                "INSERT OR IGNORE INTO logs (
                      observed_unix_nano, has_time, service, trace_id, span_id,
                      severity_number, severity_text, body, attributes,
-                     attributes_text, search_text
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     attributes_text, search_text, fingerprint
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             for record in &batch.records {
                 let observed = record.observed_time_unix_nano.max(record.time_unix_nano);
@@ -237,7 +286,21 @@ impl LogStore {
                 let severity = record.severity();
                 let attributes = serde_json::to_string(&record.attributes).unwrap_or_default();
 
-                stmt.execute(params![
+                // Hashed over every field that is stored, so two records differing in
+                // any of them stay two records. blake3 rather than DefaultHasher: the
+                // fingerprint is persisted, and DefaultHasher is not guaranteed to give
+                // the same answer in the next release.
+                let fingerprint = fingerprint(
+                    observed,
+                    &service,
+                    trace.as_deref(),
+                    span.as_deref(),
+                    severity.number(),
+                    &record.body,
+                    &attributes,
+                );
+
+                let changed = stmt.execute(params![
                     observed as i64,
                     has_time,
                     service,
@@ -249,10 +312,16 @@ impl LogStore {
                     attributes,
                     attributes_text(&record.attributes),
                     search_text(&record.body, &record.attributes),
+                    fingerprint,
                 ])?;
-                report.inserted += 1;
-                if let Some(t) = trace {
-                    traces.insert(t);
+
+                if changed == 0 {
+                    report.duplicates += 1;
+                } else {
+                    report.inserted += 1;
+                    if let Some(t) = trace {
+                        traces.insert(t);
+                    }
                 }
             }
         }
@@ -369,7 +438,12 @@ impl LogStore {
             _ => parse_protobuf(&bytes)?,
         };
         let mut report = self.insert_batch(&batch)?;
-        if report.inserted == 0 {
+
+        // "Nothing was inserted" has three causes and they must not be reported as one.
+        // Reading a payload a second time inserts nothing because every record is
+        // already stored -- measured, and reported as "no log records in payload", which
+        // says the file was empty and sends the reader to look at the exporter.
+        if report.inserted == 0 && report.duplicates == 0 {
             report
                 .skipped
                 .push(format!("{}: no log records in payload", file.display()));
@@ -495,6 +569,10 @@ fn borrow_params(binds: &[Box<dyn rusqlite::ToSql>]) -> Vec<&dyn rusqlite::ToSql
 
 fn merge(into: &mut IngestReport, from: IngestReport) {
     into.inserted += from.inserted;
+    // Summed, unlike traces and services below. Duplicates are a count of records, and
+    // records across payloads add up; losing this field made a repeated ingest report
+    // zero of everything, including the reason it was zero.
+    into.duplicates += from.duplicates;
     into.payloads += from.payloads;
     into.skipped.extend(from.skipped);
     // Distinctness is only exact per ingest; the report is a summary, so a sum
@@ -679,7 +757,7 @@ pub(super) mod tests {
         }
     }
 
-    fn batch(service: &str, records: Vec<LogRecord>) -> LogBatch {
+    pub(super) fn batch(service: &str, records: Vec<LogRecord>) -> LogBatch {
         let mut resource = BTreeMap::new();
         resource.insert("service.name".into(), service.into());
         LogBatch {
@@ -1165,6 +1243,10 @@ impl LogQuery {
 pub fn ingest_logs_json(report: &IngestReport, store: &LogStore) -> Result<serde_json::Value> {
     Ok(serde_json::json!({
         "records_inserted": report.inserted,
+        // Its own field, not folded into records_inserted. Ingesting the same payload
+        // twice is what an agent does after a failure, and an answer of
+        // "records_inserted: 29347" on the second run is false.
+        "records_already_present": report.duplicates,
         "payloads_read": report.payloads,
         "distinct_traces": report.traces,
         "distinct_services": report.services,
@@ -1174,6 +1256,110 @@ pub fn ingest_logs_json(report: &IngestReport, store: &LogStore) -> Result<serde
         "store_records": store.len()?,
         "services": store.services()?,
     }))
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// `merge` has to carry the duplicate count, or a directory ingest reports zero of
+    /// everything on a repeat run -- which is what made the CLI print neither the count
+    /// nor the reason while `insert_batch` reported both correctly.
+    #[test]
+    fn merging_keeps_the_duplicate_count() {
+        let mut a = IngestReport {
+            inserted: 3,
+            duplicates: 0,
+            payloads: 1,
+            ..Default::default()
+        };
+        let b = IngestReport {
+            inserted: 0,
+            duplicates: 7,
+            payloads: 1,
+            ..Default::default()
+        };
+        merge(&mut a, b);
+        assert_eq!(a.inserted, 3);
+        assert_eq!(
+            a.duplicates, 7,
+            "the reason for the zeros has to survive the merge"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::tests::{batch, record};
+    use super::*;
+    use crate::sdg::log::Severity;
+
+    fn two() -> LogBatch {
+        batch(
+            "Agency.API",
+            vec![
+                record("a", Severity::Error, Some("t-1")),
+                record("b", Severity::Error, Some("t-2")),
+            ],
+        )
+    }
+
+    /// Ingesting the same payload twice must not double the store.
+    ///
+    /// Measured before this: 29,347 records, the same payload again, 58,694 -- and
+    /// `records_inserted: 29347` reported both times, with nothing saying otherwise. Every
+    /// count downstream was wrong afterwards.
+    #[test]
+    fn the_same_payload_twice_adds_nothing_the_second_time() {
+        let mut store = LogStore::temporary("dedupe").expect("store");
+
+        let first = store.insert_batch(&two()).expect("first");
+        assert_eq!(first.inserted, 2);
+        assert_eq!(first.duplicates, 0);
+
+        let second = store.insert_batch(&two()).expect("second");
+        assert_eq!(second.inserted, 0, "nothing new the second time");
+        assert_eq!(second.duplicates, 2, "and it says why: {second:?}");
+
+        assert_eq!(store.len().unwrap(), 2, "the store held 2, not 4");
+    }
+
+    /// A different body is a different record. The fingerprint has to cover the text, or
+    /// two different failures would collapse into one.
+    #[test]
+    fn a_different_body_is_a_different_record() {
+        let mut store = LogStore::temporary("dedupe_body").expect("store");
+        store.insert_batch(&two()).expect("first");
+        let second = store
+            .insert_batch(&batch(
+                "Agency.API",
+                vec![record("c", Severity::Error, Some("t-1"))],
+            ))
+            .expect("second");
+        assert_eq!(second.inserted, 1);
+        assert_eq!(store.len().unwrap(), 3);
+    }
+
+    /// Same body, different trace: two lines can legitimately read identically and both
+    /// belong in the store, because the trace is what makes them different events.
+    #[test]
+    fn identity_fields_are_part_of_the_fingerprint() {
+        let mut store = LogStore::temporary("dedupe_identity").expect("store");
+        store
+            .insert_batch(&batch(
+                "Agency.API",
+                vec![record("same text", Severity::Error, Some("t-1"))],
+            ))
+            .expect("first");
+        let second = store
+            .insert_batch(&batch(
+                "Agency.API",
+                vec![record("same text", Severity::Error, Some("t-2"))],
+            ))
+            .expect("second");
+        assert_eq!(second.inserted, 1, "same text, different trace: both kept");
+        assert_eq!(store.len().unwrap(), 2);
+    }
 }
 
 #[cfg(test)]
@@ -1232,6 +1418,7 @@ mod json_tests {
     fn the_ingest_json_reports_problems_alongside_the_counts() {
         let store = seeded();
         let report = IngestReport {
+            duplicates: 0,
             inserted: 2,
             payloads: 1,
             traces: 1,

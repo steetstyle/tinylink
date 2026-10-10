@@ -557,6 +557,53 @@ public class GetMembersEndpoint
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// `search_logs` has to say which file it answered from, and when that file is empty
+    /// has to name the path in the note.
+    ///
+    /// The store path is derived from the index path, so ingesting to one file and
+    /// searching another was possible with no tool saying so. Measured: 29,347 records
+    /// ingested, and the search answered "the log store is empty" -- because the records
+    /// were in a different file and nothing named it.
+    #[test]
+    fn search_logs_names_the_store_it_read() {
+        let root = std::env::temp_dir().join(format!("tinylink_storepath_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("agency.logs.db");
+        let store = LogStore::open(crate::sdg::log_store::LogStorePath::File(path.clone()))
+            .expect("open store");
+
+        let out = search_logs(
+            &store,
+            &path,
+            SearchLogsArgs {
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .expect("search an empty store");
+
+        assert_eq!(out["store_records"], 0);
+        assert_eq!(
+            out["log_store"]["path"],
+            path.display().to_string(),
+            "the response has to name the file it read"
+        );
+        let note = out["note"]
+            .as_str()
+            .expect("an empty store explains itself");
+        assert!(
+            note.contains("agency.logs.db"),
+            "the path must be in the note: {note}"
+        );
+        assert!(
+            note.contains("different file"),
+            "and say why an empty answer might not mean no logs: {note}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn blast_radius_accepts_a_bare_class_name() {
         let (ctx, root) = context("blast_class");
@@ -710,7 +757,7 @@ pub fn ingest_logs(store: &mut LogStore, args: IngestLogsArgs) -> Result<Value, 
     Ok(json)
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchLogsArgs {
     /// Restrict to one trace. Case-insensitive.
     pub trace_id: Option<String>,
@@ -743,7 +790,11 @@ pub struct SearchLogsArgs {
 /// Every filter is independent; there are no presets. The query building and the
 /// response live in [`crate::sdg::log_store`] so the CLI and this tool cannot
 /// drift apart in the fields that explain a short answer.
-pub fn search_logs(store: &LogStore, args: SearchLogsArgs) -> Result<Value, String> {
+pub fn search_logs(
+    store: &LogStore,
+    store_path: &Path,
+    args: SearchLogsArgs,
+) -> Result<Value, String> {
     let query = LogQuery {
         trace_id: args.trace_id,
         service: args.service,
@@ -762,5 +813,30 @@ pub fn search_logs(store: &LogStore, args: SearchLogsArgs) -> Result<Value, Stri
         limit: LogQuery::bounded_limit(args.limit).map_err(|e| e.to_string())?,
         offset: args.offset.unwrap_or(0),
     };
-    crate::sdg::log_store::search_logs_json(store, &query).map_err(|e| e.to_string())
+    let mut out =
+        crate::sdg::log_store::search_logs_json(store, &query).map_err(|e| e.to_string())?;
+
+    // Which file this answers from. The store path is derived from the index path unless
+    // TINYLINK_LOG_STORE says otherwise, and nothing told a caller that -- so ingesting
+    // to one file and searching another reported "the log store is empty" while the
+    // records sat on disk. The path is the only thing that makes that recoverable.
+    out["log_store"] = json!({
+        "path": store_path.display().to_string(),
+        "records": out["store_records"].clone(),
+        "derived_from": "the index path, unless TINYLINK_LOG_STORE overrides it",
+    });
+
+    // An empty store is the answer most likely to be read as "there are no logs" when it
+    // means "you looked in the wrong file", so it names the file here rather than only
+    // suggesting that logs be ingested.
+    if out["store_records"] == json!(0) {
+        out["note"] = json!(format!(
+            "The log store at {} holds no records. If you ingested somewhere else, \
+             that is a different file: the store path is {}",
+            store_path.display(),
+            store_path.display()
+        ));
+    }
+
+    Ok(out)
 }
