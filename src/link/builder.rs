@@ -277,14 +277,25 @@ pub fn expand_solution_roots(dirs: &[String]) -> Vec<String> {
 
 /// Split and validate the comma-separated `--sources` argument.
 pub fn split_sources(sources: &str) -> Result<Vec<String>> {
-    let dirs: Vec<String> = sources
+    let specs: Vec<&str> = sources
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
         .collect();
-    if dirs.is_empty() {
+    if specs.is_empty() {
         anyhow::bail!("At least one source directory required");
+    }
+
+    // A `gh:owner/repo@ref` entry is fetched here, once, and everything downstream
+    // sees a directory. Putting it at this function rather than in the index command
+    // means the CLI, the MCP tool and load_merged_projects all get it, and nothing
+    // further has to know a specifier exists.
+    let mut dirs = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let checkout = tiny_pdg_cs::source::resolve(spec)
+            .with_context(|| format!("resolving source '{spec}'"))?;
+        tiny_pdg_cs::source::announce(spec);
+        dirs.push(checkout.dir.to_string_lossy().into_owned());
     }
     Ok(dirs)
 }
@@ -334,6 +345,51 @@ fn merge_routes(into: &mut RouteTable, rt: RouteTable) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `gh:` entry must come back as a directory, because everything downstream
+    /// opens these as paths. Resolving it anywhere else would mean every caller had to
+    /// know a specifier exists.
+    #[test]
+    fn a_github_specifier_resolves_to_a_directory() {
+        // No network: the checkout is placed in the cache by hand, which is all
+        // resolve() needs to take the cached path.
+        let cache = std::env::temp_dir().join("tinylink_split_sources_test");
+        let _ = std::fs::remove_dir_all(&cache);
+
+        let previous = std::env::var_os("TINY_SOURCE_CACHE");
+        unsafe { std::env::set_var("TINY_SOURCE_CACHE", &cache) };
+        let key = tiny_pdg_cs::source::parse_github("gh:steetstyle/tinylink@main")
+            .unwrap()
+            .unwrap()
+            .cache_dir();
+        std::fs::create_dir_all(key.join(".git")).unwrap();
+        let dirs = split_sources("gh:steetstyle/tinylink@main").expect("must resolve");
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TINY_SOURCE_CACHE", value),
+                None => std::env::remove_var("TINY_SOURCE_CACHE"),
+            }
+        }
+
+        assert_eq!(dirs, vec![key.to_string_lossy().into_owned()]);
+        assert!(std::path::Path::new(&dirs[0]).is_dir());
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn local_paths_and_specifiers_can_be_mixed() {
+        // Two projects, one checked out and one on disk: the usual reason for a
+        // comma-separated list, and it has to keep working.
+        let dirs = split_sources("./does-not-matter, /also-not").expect("no fetch attempted");
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], "./does-not-matter");
+    }
+
+    #[test]
+    fn an_empty_list_is_still_refused() {
+        assert!(split_sources("  ,  ").is_err());
+        assert!(split_sources("").is_err());
+    }
 
     #[test]
     fn test_build_unified_invalid_paths() {

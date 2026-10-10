@@ -749,8 +749,12 @@ fn merge_route_table(
 
 /// Find the source directory that most likely corresponds to a service name.
 fn find_source_dir_for_service(sources: &str, service: &str) -> String {
+    // Resolved first, because a `gh:` entry has no file name to match on: the
+    // directory inside the cache is keyed by owner and reference, not by the service,
+    // so matching against the specifier would silently never succeed.
+    let dirs = builder::split_sources(sources).unwrap_or_default();
     let svc_clean = service.replace('.', "").to_lowercase();
-    for dir in sources.split(',').map(|s| s.trim()) {
+    for dir in dirs.iter().map(String::as_str) {
         if let Some(name) = Path::new(dir).file_name() {
             let n = name.to_string_lossy().to_lowercase();
             if n.contains(&svc_clean) || svc_clean.contains(&n) {
@@ -758,13 +762,9 @@ fn find_source_dir_for_service(sources: &str, service: &str) -> String {
             }
         }
     }
-    // fallback: first directory
-    sources
-        .split(',')
-        .map(|s| s.trim())
-        .next()
-        .unwrap_or("")
-        .to_string()
+    // fallback: the first source. From the resolved list, so a `gh:` entry still works
+    // here rather than being handed on as a specifier the PDG builder cannot open.
+    dirs.into_iter().next().unwrap_or_default()
 }
 
 pub fn handle_query(
