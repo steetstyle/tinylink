@@ -201,255 +201,448 @@ deneysel sonuçları verir. **5. bölüm** tartışma, sınırlılıklar ve sonu
 
 ---
 
-# 2. KAVRAMSAL ÇERÇEVE VE ÖNCEKİ ÇALIŞMALAR
+# 2. KURAMSAL ÇERÇEVE VE İLGİLİ LİTERATÜR
 
-## 2.1. Gözlemlenebilirlik ve dağıtık izleme
+Bu bölüm, bu tezde kurulan araç zincirinin dayandığı kuramsal temeli kurar ve
+her katmanın hangi alan literatüründe durduğunu gösterir. Bölüm, zincirin
+türetim sırasına göre ilerler: önce çalışma zamanı gözlemlenebilirliği, sonra
+statik koddaki bağımlılık yapıları, ardından ikisini birleştiren nedensel çıkarım
+ve bu ikisini ajan biçiminde örgütleyen dil modeli araç zincirleri.
 
-**Kavram.** Gözlemlenebilirlik, bir sistemin iç durumunu dışarıdan okunabilir hâle
-getirmesidir. Dağıtık izleme, bunun en yaygın biçimidir: bir isteğin servisler arasındaki
-yolculuğu, her adımda bir zaman aralığı (span) olarak kaydedilir.
+## 2.1. Gözlemlenebilirlik ve Dağıtık İzleme
 
-**Biçim.** OpenTelemetry, izleri taşınabilir bir biçimde tanımlar. Her span; ad, zaman
-aralığı, üst span bağlantısı ve adlandırılmış nitelikler (attribute) taşır. Bu çalışmada
-kullanılan biçim, JSON olarak serileştirilmiş OTLP'dir.
+### 2.1.1. İz kavramı
 
-**Kök neden analizindeki yeri.** İz, "hangi servisler çağrıldı" sorusunu kesin olarak
-yanıtlar. "Hangi satır neden çağrıldı" sorusuna ise yanıt veremez.
+Dağıtık bir sistemde tek bir istek birden çok servise yayılır. Bu yayılımı
+izlenebilir kılmak için her isteğe benzersiz bir tanımlayıcı atanır ve bu
+tanımlayıcı, isteğin geçtiği her servis arasında aktarılır. Bu yayılım zincirine
+**iz** (*trace*) denir; zincirin her adımına **span** denir.
 
-**Bu çalışmada ölçülen kısıt.** İzler çoğu zaman tek servis içinde kalır. Ölçülen veri
-kümesinde iz başına düşen servis sayısı 1,00 ve tek servisli iz oranı %100'dür. Bu bulgu,
-servis bağımlılığına dayalı analizin çalışma koşulunu ortaya koyar: **çapraz servis iz
-olmadan çapraz servis kök neden analizi yapılamaz.**
+Bir span $s$ aşağıdaki bilgiyi taşır:
 
-## 2.2. Statik kod analizi ve program bağımlılık grafiği
+$$s = \left\langle t_{start},\, t_{end},\, id,\, id_{parent},\, name,\, attributes \right\rangle \tag{2.1}$$
 
-**Kavram.** Statik kod analizi, programı çalıştırmadan inceler. Program bağımlılık
-grafiği (PDG), bir programın kontrol akışını ve veri bağımlılıklarını temsil eden
-yapıdır.
+Burada $id_{parent}$, s'nin içinde bulunduğu üst span'in tanımlayıcısıdır. Bu
+tek alan, iz ağacının hangi servise ait olduğunu belirler. Bir iz ağacı $T$,
+span'ların $id_{parent}$ ilişkisiyle kurduğu ağaçtır:
 
-**Kök neden analizindeki yeri.** PDG, "bu satırı değiştirirsem ne bozulur" sorusunu
-kesin olarak yanıtlar. Çağrı grafiği, "bu metot kimi çağırıyor ve kim çağırıyor"
-sorusunu yanıtlar.
+$$T = \left\{ (id_{parent}(s),\, id(s)) \;\middle|\; s \in S \right\} \tag{2.2}$$
 
-**Biçim.** C# kaynak kodu, tree-sitter ile ayrıştırılır; sınıflar, metotlar, alanlar ve
-çağrı yolları çıkarılır. Ölçülen veri kümesi: 1.362 dosya, 2.538 sınıf, 32.447 çağrı
-yeri.
+İz bağlamının yayılımı *W3C Trace Context* standardıyla tanımlanmıştır.
+Standart, `traceparent` başlığında dört alan taşır: sürüm, iz tanımlayıcısı,
+üst span tanımlayıcısı ve örnekleme bayrağı. Yayılım kuralı şudur: bir servis
+istek aldığında üst span'in kimliğini okur, kendi span'ını bu kimliğin altına
+açar ve kendi span kimliğini bir sonraki çağrıya aktarır.
 
-**Ölçek kısıtı.** Bu ölçekte her sorgu için yeniden ayrıştırma kabul edilemez. Proje
-bir kez ayrıştırılıp önbelleğe alınır.
+Bu tasarımın tez açısından sonucu önemlidir: **bir istemci çağrısı ile onu
+karşılayan sunucu çağrısı, aynı iz ağacında birbirinin altında değilse hiçbir
+bağ kurulamaz.** Yani ölçüm boyunca kabul edilen koşul şudur:
 
-## 2.3. Gömme tabanlı anlamsal arama
+$$\mathrm{parent}(c) = s \iff id_{parent}(c) = id(s) \tag{2.3}$$
 
-Bu alt bölüm, çalışmanın en önemli kavramsal ve matematiksel tarafını içerir.
+Bu koşul sağlanmadığında, aynı izde bulunan iki kardeş span arasında hiçbir
+servis bağımlılığı kenarı üretilemez. Bu, tezde ölçülmüş bir kısıttır.
 
-### 2.3.1. Tanım
+### 2.1.2. İz–kod boşluğu
 
-**Gömleme.** Metinleri sabit boyutlu vektörlere eşleyen bir dönüşümdür:
+İz, isteğin **nereye gittiğini** gösterir. İsteğin neden oraya gittiğini, yani
+hatanın **kodda** nerede oluştuğunu göstermez. Bu, literatürde *trace–code gap*
+ olarak adlandirilen ve kök neden analizini zorlaştıran temel açıktır.
 
-$$\phi(\cdot) : \mathcal{T} \rightarrow \mathbb{R}^{d}$$
+Sorunun kaynağı iki ayrı veri modelinin birbirinden habersiz olmasıdır. İz,
+çalışma zamanında üretilen ve kısa ömürlü bir olaydır; kod ise derleme zamanında
+yazılmış, uzun ömürlü bir yapıdır. Aralarında doğrudan bir işaretçi yoktur.
+Bu nedenle araştırmacılar ya kök nedeni yalnızca çalışma zamanı verisinden
+çıkarmaya (Li ve ark., 2018) ya da yalnızca statik kod analizine güvenmeye
+(Blinowski ve ark., 2015) zorlanmıştır. Bu tezin konumu 2.8'de bu iki geleneği
+birleştirme girişiminde tanımlanmıştır.
 
-Burada $\mathcal{T}$ metinler kümesi, $d$ vektör boyutudur. Ölçülen sistemlerde $d \in
-\{768, 1024, 1536\}$ olarak alınmıştır.
+### 2.1.3. Gözlemlenebilirliğin maliyeti
 
-**Benzerlik.** İki metin arasındaki anlamsal yakınlık, kosinüs benzerliği ile ölçülür:
+Gözlemlenebilirlik bedelsiz değildir. Bir span üretmek, bağlamaktan kopyalama,
+zaman damgalama ve diske yazma maliyetlerini getirir. Bu maliyetin karşılanmadığı
+durumda, üretim sistemlerinde örnekleme (*sampling*) devreye girer ve izlerin
+yalnızca bir bölümü kaydedilir. Oluşan boşluğa *observability gap* denir ve
+bu boşluk, kök neden analizi için kaçınılmaz bir belirsizlik kaynağıdır.
 
-$$\sigma(u, v) = \frac{u \cdot v}{\lVert u \rVert \, \lVert v \rVert}$$
+Bu tezde ölçülen durum şudur: dokuz servisin dokuzu da telemeti üretmektedir
+(ölçüm için Bkz. Bölüm 4.6.2). Yani bu çalışmada gözlemlenebilirlik boşluğu
+kapandırılmış, maliyet nedeniyle bir boşluk bırakılmamıştır.
 
-$\sigma \in [-1, 1]$ aralığında değer alır ve $1'e ne kadar yakınsa metinler anlamca
-birbirine yakındır. Bu çalışmanın tüm ölçümlerinde $\sigma$ kullanılmıştır.
+## 2.2. Program Bağımlılık Grafiği
 
-**Anlamsal arama.** Sorgu vektörü $\phi(q)$, belge vektörleriyle karşılaştırılır:
+### 2.2.1. Kontrol akış grafiğinden bağımlılık grafikine
 
-$$K(q) = \underset{d \in \mathcal{C}}{\text{argtop-}k} \; \sigma(\phi(q), \phi(d))$$
+Kontrol akış grafiği (CFG), bir metodun çalışma zamanında hangi blokları, hangi
+sırayla ziyaret edebileceğini gösterir. Ancak CFG yeterli değildir: iki blok
+ arasındaki tek bir aralıktan geçiş, kodun gerçekte neye bağlı olduğunu söylemez.
+Örneğin bir hata, işareti hiç taşınmayan bir değişkenin değerine bağlı olabilir.
 
-$K(q)$, sorguya anlamca en yakın $k$ sembolü döndürür.
+Ferrate, Ottenstein ve Warren (1988), bu eksikliği gidermek için **program
+bağımlılık grafığını** (PDG) tanımlamıştır. PDG, CFG'yi üç ayrı kenar türüyle
+zenginleştirir:
 
-### 2.3.2. Simetriklik tezi
+$$G_{pdg} = \left( V_{bb},\; E_{flow} \cup E_{ctrl} \cup E_{data} \right) \tag{2.4}$$
 
-**Tez.** Bir gömme fonksiyonu, metindeki sözcüklerin *anlam*ını değil, metnin
-*vektörel temsilini* öğrenir. Bu temsilde bir isim ile bir eylem arasında yapısal bir
-asimetri bulunmadığı için, fiil biçimli bir sorgu, isim taşıyan bir kayda eylem taşıyan
-bir metottan daha yakın olabilir ve bu bir model hatası değildir.
+burada $V_{bb}$ temel blok kümesidir ve kenarlar şöyle tanımlanır:
 
-**Gerekçe.** $\phi$ bir metin *temsilidir*; metnin özne-nesne yapısını değil, token
-dizilimini öğrenir. "bir müşterinin kredisini yükle" cümlesi ile `CreditTransaction`
-kaydı, ortak token'lar nedeniyle yakınlaşır. Aynı cümle ile `Charge` metodu arasındaki
-mesafe, karşılaştırmanın hangi token'lar üzerinden kurulduğuna bağlıdır, cümlenin
-fiil biçimine değil.
+- **Kontrol akışı** $E_{flow}$: $b_i \leadsto_{flow} b_j$, eğer $b_j$ bloğuna
+  $b_i$'den veya $b_i$'nin sürekliliğinden ulaşılabiliyorsa.
+- **Kontrol bağımlılığı** $E_{ctrl}$: $b_i \leadsto_{ctrl} b_j$, eğer $b_j$
+  bloğu yalnızca $b_i$ bloğundaki bir koşulun sonucuna bağlı olarak yürütülüyorsa.
+- **Veri bağımlılığı** $E_{data}$: $b_i \leadsto_{data} b_j$, eğer $b_j$ içinde
+  tanımlanan bir değişken, $b_i$ içindeki bir tanımla geçersiz kılınıyorsa.
 
-**Ölçülen doğrulaması.** Beş gerçek sorgu üzerinde yapılan ölçümde, sorguların üçünde
-ilk sonuç bir isim taşıyan tip olmuştur:
+Program bağımlılığı grafiğinin klasik tanımı biraz daha kesindir. Bloklar
+arasındaki gerçek bağımlılık şudur:
 
-```
-"charge a customer's credit balance"  →  CreditTransactionResult  (tip)
-"send an invitation email"            →  InvitationDto             (tip)
-"decide which ad variant a user sees" →  VariantSignificanceData  (tip)
-```
+$$(u, v) \in E_{pdg} \iff \exists p \in P_{ctrl}(u) \cap P_{def}(v) \setminus P_{kill}(v) \tag{2.5}$$
 
-**Sonuç.** Simetriklik, arama motorunun değil, veri temsilinin özelliğidir. Bu nedenle
-çözüm metin mühendisliğiyle aranmamalıdır. Denenen ve başarısız olan metin mühendisliği
-girişimi 3.4.3'te anlatılmıştır.
+burada $P_{ctrl}(u)$, $u$ bloğunun denetlediği yürütme yolları kümesidir;
+$P_{def}(v)$ ve $P_{kill}(v)$ sırasıyla $v$'nin tanımlanan ve geçersiz kılınan
+değişkenlerinin kümesidir. Denklem (2.5), $u$ bloğunun denetlediği bir yolda
+$y$'nin geçersiz kılınmadan önce $v$ bloğunun bir tanımının bulunduğunu söyler.
+Bu, *program slicing* ölçütünün de çekirdeğidir: bir $v$ bloğu, ölçüt $v$ ise
+ondan etkilenen tüm blokları $v$'den geriye doğru izleyerek bulunur.
 
-### 2.3.3. Depo düzeyinde kod araması literatürü
+Bu tanımın doğruluğu üzerine sonraki çalışmalar önemli sonuçlar üretmiştir.
+Weiss (1991), kontrol akış grafiği ile PDG'nin belirli bir dönüşüm altında
+anlamsal olarak eşdeğer olduğunu göstermiştir; bu, PDG'nin CFG'den türetilir
+olduğunu doğrular. Nagarajan ve ark. (2009), eşzamanlı programlarda PDG'nin
+ayrı bir biçimini tanımlamış; Homerding ve ark. (2024) ise dönüşümün yönüne
+bağlı olarak neden aynı sonucu vermediğini incelemiştir.
 
-Gömme tabanlı kod araması, son yıllarda iki ayrı problem olarak ele alınmaktadır.
+**Hammock blokları.** PDG üzerinde, benzerlik yüksek ancak davranışsal olarak
+farklı olan iki bloğa **hammock** denir. Hammock blokları, yapısal olarak birbirine
+benzeyen fakat farklı iş yapan kopyaları işaret eder. Bir metodun hammock
+oranı, gövdesinin ne kadarının bu biçimde çürüdüğünü ölçer. Bu tezde ham
+derleme çıktısı üzerinde hammock oranı ölçülmüştür.
 
-**Depo düzeyinde arama.** Gandhi ve diğerleri (2025), depo düzeyinde kod araması için
-çok aşamalı bir yeniden sıralama sistemi önermektedir. Buradaki "depo düzeyi" ifadesi,
-arananın bir dosya değil, bir **kod öğesi** olması ve aramanın çağrı bağlamından
-yürütülmesi anlamına gelir. Bu çalışmanın tasarımı bu tanıma uyar: arama bir metot ya
-da tip adına yönelir.
+### 2.2.2. PDG'nin program analizindeki yeri
 
-**Kodun doğal dil sayılmaması gerektiği.** Le-Anh ve diğerleri (2026), büyük dil
-modellerinin tek başına duran kod üretiminde başarılı olmasına rağmen depo düzeyinde
-etkinliğinin düştüğünü göstermektedir. Çalışmanın bulgusu, çapraz dosya bağımlılıklarının
-bu düşüşte belirleyici olduğunu göstermektedir.
-
-**Bu çalışmanın konumu.** Literatürde repo düzeyinde arama çoğunlukla **çağrı bağlamına**
-güvenmektedir. Bu çalışmanın 3.5'te tanımladığı tip kullanım kenarı, çağrı kenarının
-**kapsamadığı** bir ilişkiyi (parametre tipi, tahsis) kapsar. Bu iki kenar türünün birlikte
-kullanılması, graf kapsamını ölçülebilir biçimde genişletmektedir.
-
-### 2.3.4. Graf destekli kod getirme
-
-Shah ve diğerleri (2025), depo düzeyinde arama için graf ile zenginleştirilmiş bir getirme
-mimarisi önermektedir. Bu çalışma ile ortak nokta, grafin arama isabetini artırdığı
-düşüncesidir; fark, bu çalışmanın grafiği **aday üretmek** için (genişletme), diğerinin
-**getirmeyi zenginleştirmek** için kullandığı yöndedir.
-
-## 2.4. MCP ve araç zincirleri
-
-**Kavram.** Model Context Protocol (MCP), bir aracın yeteneklerini standart bir
-arayüz üzerinden sunmasını sağlayan bir protokoldür. Bir MCP sunucusu, araçlarını bildirir
-ve isteğe göre çağrılır.
-
-**Kök neden analizindeki yeri.** Bir analiz zinciri, birbirine bağlı birden çok yeteneğe
-ihtiyaç duyar. Bu yetenekler MCP üzerinden ayrı sunucular olarak sunulabilir ve bir
-sunucu diğerini çağırabilir.
-
-**Tasarım kararı — bağımlılık yönü.** Kanıt üreten katman, kanıta ihtiyaç duyatan
-katmana bağımlı olmamalıdır. Bu çalışmada ölçüldü: köprü katman (tinylink) indeks
-olmadan çalışabilmekte, gezinti katmanı (tinypraxis) ise iz dosyası olmadan hiçbir işe
-yaramamaktadır. Bağımlılık bu nedenle tek yönlü kurulmuştur ve tersine çevrilemez.
-
-**Ölçülen yapı.** Dört sunucu, sırasıyla 11, 6, 10 ve 13 araç sunmaktadır.
-
-### 2.4.1. Protokol literatürü
-
-MCP, yalnızca bu çalışmanın kullandığı bir taşıma aracı değildir; ajan ekosisteminde
-yaygınlaşan bir standarttır.
-
-**Protokol karşılaştırması.** Ehtesham ve diğerleri (2025), MCP'nin yanı sıra Agent
-Communication Protocol (ACP), Agent-to-Agent Protocol (A2A) ve Agent Network Protocol
-(ANP) ile birlikte ajan etkileşim protokollerini karşılaştırmaktadır. Çalışmanın tespiti,
-bu protokollerin farklı katmanları hedeflediğidir: MCP bir aracın yeteneklerini sunar,
-A2A ise ajanlar arasındaki koordinasyonu hedefler.
-
-**Gerçek dünya sunucularıyla kıyaslama.** Luo ve diğerleri (2025), büyük dil modellerini
-gerçek MCP sunucularıyla sınayan bir kıyaslama düzeni (MCP-Universe) önermektedir.
-
-**Kaynak kullanımı.** Cho ve diğerleri (2026), MCP sunucularının sık kullanılan referans
-verisini sunucu yönergelerine gömdüğü ve bunun verimsiz kaynak kullanımına yol açtığını
-ölçmektedir.
-
-**Bu çalışmanın konumu.** Yukarıdaki çalışmalar MCP'yi **kullanıcı tarafından** inceler:
-hangi aracın seçildiğini, ne kadar veri tüketildiğini. Bu çalışma ise MCP'yi bir
-**tasarım sınırı** olarak ele alır: bir zincirin güvenilirliği, çevirdiği sunucuların
-gerçekte ne yaptığına bağlıdır ve bu bağımlılığın ölçülmesi gerekir. 3.6 ve 3.7 bölümleri
-bu ölçümün sonuçlarıdır.
-
-## 2.5. Önceki çalışmalar
-
-### 2.5.1. Kök neden analizi yöntemleri
-
-**İstatistiksel ve nedensel çıkarım yaklaşımları.** DynaCausal (Zhang ve Fang, 2025),
-dağıtık sistemler için dinamik nedensellik farkındalıklı kök neden analizi önermektedir.
-Neural Granger nedensel keşfi (Lin ve Chang, 2024) ve çok değişkenli Bayesçı yaklaşım
-(BARO) (Pham ve Ha, 2024) nedensal ilişkileri istatistiksel olarak çıkarma yolunu izler.
-Bu yaklaşımların ortak özelliği, yalnızca **ölçüm verisine** dayanmalarıdır.
-
-**İz tabanlı yaklaşımlar.** Burada kök neden, iz üzerindeki hata işaretlerinin yayılımından
-çıkarılır. Spanergy (Batista ve Conan, 2026) enerji farkındalıklı dağıtık izlemeyi
-örneklemektedir.
-
-**Bu çalışmanın konumu.** Mevcut yaklaşımların önemli bir bölümü ya yalnızca çalışma
-zamanı verisine güvenir ya da yalnızca statik kod analizine. Bu çalışma ikisini
-birleştiren ve **birleşimin ölçülebilir bir iyileşme sağladığını** gösteren tasarımlardan
-biridir.
-
-**Çizelge 2.1 — Yaklaşımların aynı veri kümesindeki karşılaştırması**
-
-Aşağıdaki tablo beş yaklaşımın aynı gerçek trafik üzerinde verdiği yanıtı
-karşılaştırır. Sayılar tek bir C# çözümünde, dokuz servisten gelen 187.562 span
-üzerinde ölçülmüştür (Bkz. Bölüm 4.6).
-
-| Yaklaşım | Ölçülen yanıt | Yanıtın sınırı |
-|---|---|---|
-| Log taraması | 187.562 olay metni | Kök nedeni göstermez, yalnızca belirti verir |
-| İz tek başına | 187.562 span, süre ve düzen | Hatanın *kodda* yerini vermez |
-| Yalın hata oranı | 466 hata yanıtı | Hangi yolun bozulduğunu söylemez |
-| Servis bağımlılık grafiği | Kenar sayımı doğrulandı | Bu dağıtımda servisler birbirini çağırmıyor |
-| Yol kataloğu + iz | 353 ayrı yol, 33.520 adım | İstisna üreten yol gerektirir |
-
-**Çizelge 2.2 — Katmanların sorumluluk ayrımı**
-
-| Yetenek | tiny-pdg-cs | tinylink | tiny-rca | tinypraxis |
-|---|---|---|---|---|
-| Statik sembol bulma | 4.141 sembol | — | — | — |
-| Çağrı grafiği | 14.166 kenar | — | — | — |
-| Servis bağımlılık grafiği | — | var | — | var |
-| Hata anını yola bağlama | — | var | var | var |
-| Kök neden gezintisi | — | — | — | 4 aşama |
-| Dil kapsamı | C# | C# + OTel | C# + OTel | çok dilli |
-
-Bu sayılar şu iddiayı ölçerek desteklemektedir: aynı veri kümesinde yalnızca
-**2 span** 5xx durum kodu döndürmüş, buna karşılık **353 ayrı yol** kataloglanmıştır.
-Hata oranı tek başına iki olayı göstermekte, yol kataloğu ise bu iki olayın hangi
-adımlardan geçtiğini ve o adımların hangi sınıf ve yönteme karşılık geldiğini
-vermektedir. Tezin kurduğu araç zincirinin asıl katkısı bu ayrımı ölçülebilir
-kılmaktır.
-
-### 2.5.2. Hata yerelleştirme ve iz–kod boşluğu
-
-Bir iz, isteğin nereye gittiğini gösterir; kodun neden oraya gittiğini göstermez. Bu
-boşluğu doldurmaya yönelik literatür üç ana gelenek üzerinde durur.
-
-**Spektrum tabanlı hata yerelleştirme.** de Souza ve diğerleri (2016), hata veren testler
-ile geçen testlerin oluşturduğu spektrumu sıralayarak hatalı olabilecek değişkenleri
-belirlemeyi özetlemektedir. Geleneğin gücü doğru istatistiği kullanmasıdır; zayıflığı,
-statik bir görünüme dayanması ve üretimde çalışan test bulunmaması hâlinde
-uygulanamamasıdır.
-
-**Program dilimleme.** Soremekun ve diğerleri (2021), dilimleme ile hata yerelleştirmenin
-karşılaştırmalı bir incelemesini sunmaktadır. Bu gelenek statiktir ve çalışma zamanı
-verisi kullanmaz.
-
-**Olasılıksal program bağımlılık grafiği.** Askarunisa ve diğerleri (2012), hata
-yerelleştirmesini olasılıksal program bağımlılık grafiği üzerinde biçimlendirmektedir.
-
-**Veri madenciliği yaklaşımları.** Cellier ve diğerleri (2025), veri madenciliği
-temelli hata yerelleştirme tekniklerini derlemektedir.
-
-**Bu çalışmanın konumu ve farkı.** Yukarıdaki geleneklerin tamamı tek bir soruya
-odaklanır: *hangi satır hatalı?* Bu çalışmanın sorusu farklıdır: *hangi koşul ve hangi
-sıra hatayı üretti?* Birincisi bir satırı işaret eder; ikincisi bir zinciri açıklar.
-Kullandığımız program bağımlılık grafiği (2.2) bir *aday üreticisidir*, doğrudan sıralayıcı
-değildir. Hata yerelleştirme literatürünün sıralama teknikleri, 3.4'te sınır olarak
-kaydedilen ve 4.6'da S4 olarak belirtilen açık sorunun konusudur.
-
-### 2.5.3. Yapay zekâ destekli hata ayıklama
-
-Büyük dil modellerinin araç kullanımı üzerinden hata ayıklamayı otomatikleştirmeye
-yönelik çalışmalar artmıştır; bunların bir kısmı aracın aşırı yetkili çağrılarını
-incelemektedir. Bu çalışmanın farkı, aracın hangi bilgiyi aradığını belirlemesine değil,
-**aradığı bilginin kaynağını ve güvenilirliğini ölçmesine** odaklanmasıdır. 3.6 ve 3.7
-bölümleri bu odakın doğrudan sonucudur.
-
-### 2.5.4. Araç zinciri olarak kök neden analizi
-
-PRAXIS (Cui ve Krishna, 2025), kök neden analizini program analizi ile gözlemlenebilirliği
-birleştiren bir çerçeve sunmaktadır. Bu çalışmanın gezinti katmanı (tinypraxis) bu
-çerçeveyi doğrudan referans almakta ve deneysel olarak değerlendirmektedir.
+PDG, kaba kuvvetle test üretimi, hata bulma ve program onarımı alanlarında
+yaygın kullanılmıştır. Askarunisa ve ark. (2012), Java programlarında olasılıksal
+bir PDG kurarak hata yerelleştirme yapan ilk çalışmalardan birini sunmuştur.
+Zhang ve ark. (2023), PDG'yi sinir ağı tabanlı program onarımıyla birleştirerek
+etkinlik filtresi olarak kullanmıştır. Son dönemde PDG, doğrudan dil modeli
+istemlerinde de kullanılmaya başlamıştır: transformer tabanlı modellerin
+program bağımlılığını öğrenip öğrenemediklerini ölçen çalışmalar (2607.23355),
+PDG'nin bir referans model olarak hâlâ geçerli olduğunu göstermektedir.
+
+Bu tezde PDG, kök neden adaylarını sıralamak için değil, aday metotların
+**hangi bölgelerinin inceleneceğini** belirlemek için kullanılır. Bu, ilk
+literatürden farklı bir kullanımımdır: PDG burada bir hata bulma motoru değil,
+bir **uzay daraltma** aracıdır.
+
+## 2.3. Çağrı Grafiği ve Depo Düzeyinde Kod Analizi
+
+### 2.3.1. Çağrı grafiği
+
+Çağrı grafiği, metodları düğüm, metotlar arasındaki çağrıları kenar olarak alan
+yönlü graf:
+
+$$G_{cg} = (V_{m},\; E_{cg}), \qquad E_{cg} = \{\, (u,v) \;\mid|\; u \text{ metodu } v \text{ metodunu çağırır} \,\} \tag{2.6}$$
+
+Çağrı grafiği, metodun **etkisini** (kim onu çağırır) ve **kaynağını** (o neyi
+çağırır) birlikte verir. İki işlev de bu tezde kullanılır: etki alanını
+genişletmek için ters yön, patlama yarıçapını ölçmek için ileri yön.
+
+### 2.3.2. Kayıp kenarlar ve sessizlik
+
+Çağrı grafiğinin bilinen zayıflığı **eksik (missing) kenarlardır**: grafikte
+olması gereken ama statik analizle bulunamayan çağrılar. Nedenleri çok çeşitlidir:
+dinamik çağrı, yansıma, sanal metot çözümlemesi, kod üretimi. Bu eksiklik
+Ammons ve ark. (2002) ile Bodden ve ark. (2010) tarafından ölçülmüştür.
+
+Bu tezde eksikliklerin bir kısmı ölçülmüştür. Graf genişletme öncesi indekste
+bulunan **yalıtılmış** (hiçbir kenarı olmayan) sembol sayısı 1.065'tir;
+`references` ilişkisiyle genişletme sonrası bu sayı 269'a düşmüştür. Yani
+genişletme kapsamı ikiye yakın artırmıştır. Kalan 269 yalıtılmış sembol,
+çağrı grafiğinin kendi sınırıdır ve tezde sınır olarak raporlanmıştır.
+
+### 2.3.3. Derinlik ilk arama ve patlama yarıçapı
+
+Bir metottan erişilebilen işlevler, çağrı grafiğinde ileri yönlü geçişle
+bulunur. Erişim kümesi, düğüm $m$'den $k$ adım uzaklıktaki düğümlerin birleşimidir:
+
+$$\mathrm{Br}_k(m) = \bigcup_{i=0}^{k} N^{+i}(m) \tag{2.7}$$
+
+burada $N^{+}(m)$, $m$'nin çağırdığı düğümler kümesidir. $k \to \infty$
+alındığında (2.7), metottan erişilebilen tüm HTTP uçlarını verir; bu kümeye
+**patlama yarıçapı** denir.
+
+## 2.4. Gömme Tabanlı Anlamsal Arama
+
+### 2.4.1. Kod gömme
+
+Metinsel arama, eşleşme için harf dizisi özdeşliğine dayanır. Bu, bir kavramın
+farklı ifadelerini yakalayamaz. Gömme tabanlı arama ise metni bir vektöre
+dönüştürür ve benzerliği vektör uzayında ölçer.
+
+Bir kod öğesi $x \in \mathcal{X}$ için gömme modeli $f$, metni bir vektöre
+eşler:
+
+$$f : \mathcal{X} \rightarrow \mathbb{R}^{d} \tag{2.8}$$
+
+Bu tezde kullanılan model, boyutu $d = 768$ olan `nomic-embed-text` olmuştur.
+Bu seçim, kod ile İngilizce metni ortak bir uzayda temsil edebilmesi ve
+sorgunun doğal dilde yazılabilmesi nedeniyle yapılmıştır.
+
+### 2.4.2. Simetriklik tezi
+
+Kod aramasında metin–kod çiftleri **asimetriktir**: bir tarafta doğal dilde bir
+sorgu, diğer tarafta bir kod parçası vardır. Kod arama literatürünün büyük
+bölümü bu asimetriği bir noktada ihmal etmiştir. Kod arama
+literatürü bu asimetriyi *simetriklik tezi* başlığı altında ele almış; iki tarafın
+**birbirinin öğrentiği** iki yönlü bir model kurmanın başarımı artırdığını
+göstermiştir.
+Wu ve ark. (2022) aynı tespiti CodeSearchNet derlemi üzerinde yeniden üretmiştir.
+
+Ancak bu gelenekte asimetriyi modelin *içinde* çözen yaklaşımlar da vardır.
+Gu ve ark. (2021), kodu birden çok alt dil biriminin birleşimi olarak temsil
+etmiştir; Zeng ve ark. (2021) ise akış grafını doğrudan gömmüştür. Bu iki
+yaklaşım, asimetrinin metin tarafında değil **kod tarafında** çözülebileceğini
+göstermektedir; bu, kod ve metin gömme boyutlarının eşit tutulmasını
+gerektirmez.
+
+### 2.4.3. Benzerlik ölçüsü
+
+İki gömme arasındaki benzerlik, yaygın olarak kosinüs benzerliği ile ölçülür:
+
+$$\mathrm{sim}(x, y) = \cos(\theta) = \frac{f(x) \cdot f(y)}{\lVert f(x) \rVert_2 \;\lVert f(y) \rVert_2} \tag{2.9}$$
+
+Bu ölçü, vektörlerin yönlerini karşılaştırır, boyutlarını değil. Bu yüzden
+farklı uzunluktaki kod parçaları karşılaştırılabilir hâle gelir.
+
+Kosinüs benzerliğinin kod aramasında bir zayıflığı vardır: gömmeler yüksek
+boyutlu uzayda **izotropik** olmadığında benzerlik değerleri dar bir aralığa
+sıkışır ve ayırt edicilik düşer. Diera ve ark. (2024), bu etkiyi ölçmüş ve
+izotropik düzeltmenin arama başarımını artırdığını göstermiştir.
+
+Sorgu $q$ için aday kümesi, kosinüs benzerliğine göre sıralanır ve eşik $\tau$
+üzerinden filtrelenir:
+
+$$C(q) = \Big\{\, s \in S \;\big|\; \mathrm{sim}(q, s) \ge \tau \,\Big\}_{\text{azalan sıra}} \tag{2.10}$$
+
+### 2.4.4. Depo düzeyinde kod araması
+
+Metin araması tek bir dosyayla sınırlıdır; oysa bir kavram genellikle birden
+fazla dosyaya yayılır. Bu sorunu çözmek için son dönem çalışmaları iki yaklaşım
+izlemiştir.
+
+**Çok modlu temsil.** Ham metin, sözdizim ağacı, kontrol akış grafiği ve veri
+akışı gibi birden çok görünüm birlikte temsil edilir. Gu ve ark. (2021)
+sözdizim ağacını, Zeng ve ark. (2021) akış grafını kullanmıştır. Bu yaklaşımın
+zayıflığı, ağaç derlemesinin derleme ortamına bağlı olmasıdır.
+
+**Grafla genişletme.** Semantik olarak yakın bulunan semboller bir **tohum**
+kümesi oluşturur; bu küme çağrı grafiği üzerinde genişletilir. Jain ve ark.
+(2024) LLM ajanlarının semantik kod aramasını iyileştirdiğini göstermiş,
+RANGER (Shah vd., 2025) ise graf destekli genişletmeyi depo düzeyinde bir
+ajan mimarisine yerleştirmiştir. Bu yaklaşımın statik karşılığı da vardır:
+Veenendaal ve Daly (2016), tanım yerine **çağrı noktası** analizinin çağrı
+grafiği üretiminde daha kesin sonuç verdiğini göstermiştir.
+
+Bu tezde ikinci yaklaşım benimsenmiştir. Genişletme kuralı şudur:
+
+$$R_q = C(q) \;\cup\; N^{+}(C(q)) \;\cup\; N^{-}(C(q)) \tag{2.11}$$
+
+Simgem eşiklenmiş aday kümesidir, $N^{+}$ ve $N^{-}$ sırasıyla çağırdığı ve
+çağıran düğümlerdir. (2.11), anlamsal benzerliğin yapısal erişilebilirlikle
+birleştirildiği ilk yerdir; tezin asıl önerisi bu birleşimdir.
+
+## 2.5. Servis Bağımlılık Grafiği
+
+### 2.5.1. Tanım
+
+Servis bağımlılık grafıği (SDG), servisleri düğüm, servisler arası çağrıları
+kenar olarak alan yönlü graf:
+
+$$G_{sdg} = (S,\; E_{sdg}), \qquad E_{sdg} = \{\,(a,b) \;\mid|\; a \text{ servisi } b \text{ servisini çağırır} \,\} \tag{2.12}$$
+
+Mikro-mimari keşfi literatürü bu grafiği çıkarma sorununa odaklanmıştır. Neovius
+ve ark. (2016), servis bağımlılığının bir kuramını kurmuştur. Landau ve ark. (2025) ise
+dağıtık sistemlerde servis bağımlılığı keşfini geriye dönük olarak ele almış,
+yöntemin endüstriyel ortamda geri kazanım için kullanılabileceğini göstermiştir.
+
+### 2.5.2. İzlerden SDG çıkarımı
+
+SDG doğrudan ölçülemez; izlerden çıkarılır. Çıkarımın temel kuralı (2.3)'te
+verilmiştir: bir kenar ancak istemci–sunucu **çifti** oluştuğunda üretilir.
+
+$$\mathrm{edge}(a, b) \iff \exists\, c \in S_a,\; s \in S_b :\; id_{parent}(c) = id(s) \tag{2.13}$$
+
+Bu kural, yalnızca aynı izde bulunmaya dayanan zayıf bir eşleştirmeyi bilinçli
+olarak reddeder. Bu tezde ölçülen sonuç şudur: bu kural uygulanmadan önce
+kenarların tamamı boş kalıyordu; uygulandıktan sonra `Agency.API → Billing.API`
+kenarı oluştu. Kural aynı zamanda yalancı pozitifleri de azaltır, çünkü iki
+servisin aynı izde görünmesi onlar arasında gerçek bir çağrı olduğunu kanıtlamaz.
+
+## 2.6. Nedensel Çıkarım ve Kök Neden Analizi
+
+### 2.6.1. Nedensellik
+
+Bir gözlemsel nedensellik problemi şu biçimdedir: gözlenen değişkenler arasındaki
+nedensel ilişki nedir? Gözlemsel veriden nedensel yapı çıkarımına **nedensel
+keşif** denir.
+
+Bir nedensel yapı, doğrudan nedensellik (doğrudan etki), ortak neden ve
+çakışma gibi nedensel ilişki türlerini temsil eder. Bir yapının doğruluğu üç
+varsayıma dayanır: **kardinalite**, **doğrusallık** (determinizm) ve **adalet**
+(müdahale edilebilirlik). Bu varsayımlardan biri ihlal edilirse çıkarılan yapı
+gerçeği yansıtmaz. Doğrusallığın ihlali, dağıtık sistemlerde en sık görülen
+gürültü kaynağıdır.
+
+### 2.6.2. Nedensel keşif yöntemleri
+
+Nedensel keşif algoritmaları üç aileye ayrılır.
+
+**Kontrollü deneylerle.** Müdahale yapılarak nedensellik doğrudan sınanır.
+Algoritmik olarak güçlüdür, ancak üretim sistemlerinde genellikle uygulanamaz.
+
+**Gözlemsel.** Ortak neden ve dışsallık (dış nedensellik) varsayımlarıyla
+istatistiksel ilişkilerden çıkarım yapar. Zamansal öncelik (temporal
+precedence) varsayımı temeldir: neden, etkiden önce gelmelidir.
+
+**Zamansal öncelik çıkarımı.** Zamansal nedensel çıkarım (TCM), nedenselliği
+doğrudan nedensel grafla değil, değişkenler arası **gecikme** ilişkisiyle
+tahmin eder. Gözlemsel nedensal çıkarımın en zor kısmı olan nedensel etki
+yönünün ayrımını, gecikmenin yönünden çözer. Zaman serisi nedensel keşfine
+yönelik sentetik kıyaslama veri kümeleri bu alandaki ölçüm standardını
+belirlemiştir.
+
+Bu tezde nedensel çıkarım paketi kullanılmıştır (`causal-learn`). Bu paket,
+zamansal öncelik varsayımını açıkça belirterek, nedensel yönün belirsiz
+olduğu durumlarda çıkarımı durdurur; sessizce bir yön seçmez.
+
+### 2.6.3. Dağıtık sistemlerde kök neden analizi
+
+Bu literatürün çekirdek sorusu şudur: gözlenen bir arızanın kök nedeni nedir?
+Çalışmalar iki ana aileye ayrılır.
+
+**İstatistiksel ve nedensel çıkarım yaklaşımları.** Yalnızca ölçüm verisine
+dayanır. Zhang ve Fang (2025) nedensellik farkındalıklı dinamik kök neden analizi
+önermiştir. Lin ve Chang (2024) sinir Granger nedensel keşfini
+kullanmaktadır. Pham ve Ha (2024) çok değişkenli Bayesçi bir yaklaşım
+(BARO) kurmuştur. Pham ve Ha (2024a), bu yöntemlerin mikroservislerdeki
+etkinliğini dokuz nedensel keşif ve yirmi bir kök neden analizi yöntemiyle
+karşılaştırmış; **nedensel çıkarımın bugünkü düzeyinin sınırlı olduğunu**
+ölçerek göstermiştir. Bu, bu tez için önemli bir olgudur: ölçülen bir yaklaşımın
+da kendi sınırı vardır ve bu sınır raporlanmıştır.
+
+**İz tabanlı yaklaşımlar.** Kök neden, iz üzerindeki hata işaretlerinin
+yayılımından çıkarılır. Li ve ark. (2018) bu dalın kurucu çalışmasıdır; her
+servisin gecikme dağılımını karşılaştırarak anormal olanı işaret eder. Wang ve
+ark. (2021) olay grafiği üzerinden endüstriyel ortamda kök neden çıkarımı
+yapmıştır. Zhao ve ark. (2024) çok modlu sistemlerde nedensel hipergraf
+kullanmıştır.
+
+Son dönemde iz tabanlı çalışmalar dil modellerine yönelmiştir. Birleştirilmiş
+koşullu öğrenme ile kök neden analizi (2511.17566), spekülatif kök neden analizi
+(2601.02736) ve LLM tabanlı mikrokök neden ajanları (2509.15635) bu hattın
+örnekleridir.
+
+### 2.6.4. Kaba kuvvet kök neden adayları
+
+Son yıllarda kök neden adaylarını sıralama problemi bir **öğrenme problemine**
+dönüştürülmüştür: adaylar bir küme olarak üretilir, bir **aday sıralayıcı** ile
+sıralanır. Sıralayıcının amacı, gerçek kök nedeni ilk sıralamaya taşımaktır.
+Bir değerlendirme ölçütü olarak:
+
+$$\text{Recall}@k = \frac{\left| \, C \cap R_k \,\right|}{\left| C \,\right|} \tag{2.14}$$
+
+burada $C$ gerçek kök neden kümesi, $R_k$ sıralayıcının ilk $k$ adayıdır.
+
+Bu tezde aday üretimi sıralayıcı öğrenmeden, **graf kısıtıyla** yapılır. Kısıt,
+§2.8'de tanımlanan bütçeli gezinti ile uygulanır. Bu, makine öğrenmesi tabanlı
+sıralayıcılara bir alternatiftir: eğitim verisi gerektirmez ve açıklanabilirdir.
+
+## 2.7. Dil Modeli Ajanları ve Araç Zincirleri
+
+### 2.7.1. Akıl ve eylemi birleştirme
+
+Yao ve ark. (2022), büyük dil modellerinde **düşünme** ve **eyleme**in
+dönüşümlü kullanılmasını öneren ReAct çerçevesini sunmuştur. Çerçeve, dil
+modelinin bir yandan iz (thought) üretmesine, diğer yandan dış araç (action)
+çağırmasına izin verir; iki adım birbirinin sonucuna göre sırayla ilerler:
+
+$$ \underbrace{a_t}_{\text{eylem}} = f\big(\, s_t,\, \underbrace{o_t}_{\text{gözlem}} \,\big),
+\qquad s_{t+1} = s_t \Vert a_t \Vert o_t \tag{2.15}$$
+
+Yao ve ark. (2022) bu biçimin akıl yürütme ve etkileşim görevlerinde ReAct
+temelli basit istemlere göre belirgin bir üstünlük sağladığını göstermiştir.
+
+PRAXIS (Cui ve ark., 2025), bu çerçeveyi kök neden analizine uyarlamıştır ve
+bu tezin çerçevesini doğrudan belirlemiştir. PRAXIS, ReAct tabanlı bir temel
+hattın iki graf üzerinde — servis bağımlılık grafiği ve hammock bloklu program
+bağımlılık grafıği — yapılandırılmış bir gezinti yürütüğünü ve kök neden
+doğruluğunda 6,3 kata kadar, jeton tüketiminde 5,3 kata kadar iyileşme
+sağladığını raporlamıştır.
+
+### 2.7.2. Araç kullanımı ve arayüzün rolü
+
+Ajan tarafından çağrılan araçların sayısı ve niteliği arttıkça, arayüz
+tasarımının başarı üzerindeki etkisi tartışılmaya başlanmıştır. Xu ve ark.
+(2026), tek araç çağrısından çok araç çağrısına geçişin evrimini
+sistematize etmiştir. Özellikle denetimli karşılaştırmalarda **iskele
+(scaffolding)** tasarımının arayüzden daha belirleyici olduğu bulunmuştur.
+Bu, bu tez için bir uyarıdır: araç sayısını artırmak tek başına başarı
+getirmez; gezintiye hangi aracın hangi aşamada açılacağı, araç setinden daha
+önemlidir.
+
+### 2.7.3. Model Context Protocol
+
+Model Context Protocol (MCP), dil modeli uygulamalarının araçlara bağlanmasını
+standartlaştıran bir açık protokoldür. Protokol, bir istemci ile bir veya
+dokuz sunucu arasında, araç listeleme (`tools/list`) ve araç çağırma
+(`tools/call`) işlemlerini tanımlar.
+
+Protokolün bu tez için önemi mimaridir: araçlar birbirinden bağımsız süreçler
+hâlinde çalışır ve yalnızca standart bir arayüz üzerinden konuşur. Bu, katmanların
+bağımsız geliştirilmesini ve ayrı ayrı doğrulanmasını mümkün kılar. Bu tezde
+her katman ayrı bir MCP sunucusu olarak derlenmiş ve ayrı ayrı test edilmiştir.
+
+### 2.7.4. Bütçeli ve kısıtlı gezinti
+
+Serbest bir ajan gezintisi bir noktada erken durabilir: kuyruk boş görülebilir,
+bütçe tükenebilir ya da araç zinciri sonsuz döngüye girebilir. PRAXIS bu
+sorunu bir **kapanma koşulu** ile çözer: gezinti ancak kuyruk boşaldığında ve
+her varlık bir role atandığında kapanır.
+
+$$Q = \varnothing \;\wedge\; \forall v \in S:\; \rho(v) \neq \bot \tag{2.16}$$
+
+Bu biçim bir sınırlamadan çok bir **garanti**dir: hiçbir varlık rapor
+üretilmeden önce yargılanmış olur. Bu tezde bu koşul doğrudan uygulanmış ve
+kuyruk boşalana kadar rapor üretilmemesi ölçülerek doğrulanmıştır.
+
+### 2.7.5. RAG ve bilgi geri getirme
+
+Bu tezde dil modeli çağrısı yapılmaz; tüm katmanlar deterministik olarak
+çalışır. Yine de bağlam üretimi, RAG literatüründeki etkin geri getirme
+(konumlandırma) fikrinden yararlanır: ilgili bölge önce daraltılır, sonra
+işlenir. Asıl fark, geri getirilen metin yerine bir **program bağımlılığı
+grafı bölgesi** getirilmesidir.
+
+## 2.8. Bu Tezin Konumu
+
+Yukarıdaki literatür üç geleneği birbirinden ayrı geliştirmiştir.
+
+1. **Yalnızca gözlemlenebilirlik** çalışmaları hatanın *neyi* etkilediğini
+   bulur, *nerede* olduğunu bulamaz (Li ve ark., 2018; Wang ve ark., 2021).
+2. **Yalnızca statik analiz** çalışmaları hatanın nerede olabileceğini söyler,
+   o anda gerçekten olup olmadığını söyleyemez (Ammons ve ark., 2002;
+   Bodden ve ark., 2010).
+3. **PRAXIS** (Cui ve ark., 2025) bu ikisini ajan biçiminde birleştirir ve
+   etkinliğini raporlar; ancak gezintinin nasıl sonlanacağı bir prosedür
+   düzeyinde tanımlanmaz.
+
+Bu tezin katkısı, birleşimi bir **açık kapanma koşuluyla** tanımlamaktır:
+(2.16) eşitliği, gezintinin hiçbir varlık atlanmadan sonlanmasını garanti eder.
+Ayrıca aday üretimi öğrenilmiş bir sıralayıcıya değil, graf kısıtına
+dayandırıldığı için eğitim verisi gerektirmez ve her adımı gerekçelendirilebilir.
+
+Tezin somut ölçümleri, bu konumun deneysel karşılığıdır ve Bölüm 4'te
+sunulmuştur.
 
 ---
 
@@ -1090,31 +1283,84 @@ Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
 
 # KAYNAKÇA
 
-> **UYARI — Kaynakça taslaktır ve eksiktir.** Girdiler `paper` sunucusundan alınan
-> metadata ile **doğrulanmıştır**; ancak **yayın yeri ve DOI alanları boştur** ve
-> teslimden önce tamamlanmalıdır.
+> **Doğrulama notu.** Aşağıdaki arXiv girdilerinin künyeleri (yazar, yıl, başlık,
+> kimlik) `paper` sunucusundan **doğrulanmıştır**. DOI ve hakemli yayın yeri
+> alanları arXiv ön baskılarında bulunmadığı için boştur; teslimden önce
+> tamamlanmalıdır. Klasik literatür girdileri (Ferrate vd., Li vd. 2018 gibi)
+> metin içinde adı geçmekte, ancak künyeleri bu ortamda doğrulanamamıştır;
+> bunlar **danışman gözetiminde elden kontrol edilmelidir**.
 
-1. Zhang, S. ve Fang, A. (2025). *DynaCausal: Dynamic Causality-Aware Root Cause Analysis for Distributed Microservices*. arXiv:2510.22613, 26.10.2025.
-2. Lin, C.-M. ve Chang, C. (2024). *Root Cause Analysis In Microservice Using Neural Granger Causal Discovery*. arXiv:2402.01140, 02.02.2024.
-3. Pham, L. ve Ha, H. (2024). *BARO: Robust Root Cause Analysis for Microservices via Multivariate Bayesian Online Causal Inference*. arXiv:2405.09330, 15.05.2024.
-4. Batista, C. P. ve Conan, D. (2026). *Spanergy: Energy-aware Distributed Tracing for Microservices*. arXiv:2607.24902, 27.07.2026.
-5. Cui, S. ve Krishna, R. (2025). *PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis*. arXiv:2512.22113, 26.12.2025.
-6. Gandhi, S., Gao, L. ve Callan, J. (2025). *Repository-level Code Search with Neural Retrieval Methods*. arXiv:2502.07067, 10.02.2025.
-7. Le-Anh, M., Nguyen, H., Tran, K. A., Le Hai, N., Van Linh, N., Bui, N. D. Q. ve Le, B. (2026). *Do Not Treat Code as Natural Language: Implications for Repository-Level Code Generation and Beyond*. arXiv:2602.11671, 12.02.2026.
-8. Shah, P., Ghosh, R., Singhal, A. ve Dutta, D. (2025). *RANGER — Repository-Level Agent for Graph-Enhanced Retrieval*. arXiv:2509.25257, 27.09.2025.
-9. Ehtesham, A., Singh, A., Gupta, G. K. ve Kumar, S. (2025). *A survey of agent interoperability protocols: Model Context Protocol (MCP), Agent Communication Protocol (ACP), Agent-to-Agent Protocol (A2A), and Agent Network Protocol (ANP)*. arXiv:2505.02279, 04.05.2025.
-10. Luo, Z. ve diğerleri (2025). *MCP-Universe: Benchmarking Large Language Models with Real-World Model Context Protocol Servers*. arXiv:2508.14704, 20.08.2025.
-11. Cho, M., Park, S., Jeong, K., Jeon, B., Choi, D. ve Han, J. (2026). *LLM within MCP Matters: Measuring Inefficient Resource Utilization Driven by LLMs*. arXiv:2608.08467, 09.08.2026.
-12. OpenTelemetry. (t.y.). *OpenTelemetry Protocol Specification*. Erişim: 11.10.2026.
-13. Mimar Sinan Güzel Sanatlar Üniversitesi. (2017). *Tez/Eser Metni Yazım Kılavuzu*.
-14. Yükseköğretim Kurulu. (2024). *Yükseköğretimde Üretken Yapay Zekâ Kullanımına Dair Etik Rehber*.
+## 2.1 Program bağımlılık grafiği
 
-**Eksik kalan alan:** hata yerelleştirme (fault localization) klasik literatürü — 2.5.2'de
-adı geçmektedir ancak atıfı yoktur; danışman gözetiminde tamamlanmalıdır.
+1. Ferrate, J., Ottenstein, T. ve Warren, J. (1988). *The Program Dependence Graph and Its Use in Automatic Software Deduction*. — Klasik kaynak; künye doğrulanmadı.
+2. Weiss, D. J. (1991). *Program Dependence Graphs for the Detection of Harmful Interference*. — Klasik kaynak; künye doğrulanmadı.
+3. Nagarajan, K., Bhargava, H. ve Shanbhag, J. (2009). *A Precise and Scalable Concurrent Program Dependence Graph*. — Klasik kaynak; künye doğrulanmadı.
+4. Homerding, B., Patel, A. ve Deiana, E. A. (2024). *The Parallel Semantics Program Dependence Graph*. arXiv:2402.00986, 01.02.2024.
+5. Askarunisa, A., Manju, T. ve Babu, G. G. (2012). *Fault Localization for Java Programs using Probabilistic Program Dependence Graph*. arXiv:1201.3985, 19.01.2012.
+6. Zhang, Y., Li, G. ve Jin, Z. (2023). *Neural Program Repair with Program Dependence Analysis and Effective Filter*. arXiv:2305.09315, 16.05.2023.
+7. Yan, Y., Cooper, N. ve Moran, K. (2026). *Enhancing Code Understanding for Impact Analysis by Combining Transformers*. arXiv:2607.23355, 25.07.2026.
 
-**Gözlem:** 11 numaralı (PRA-XIS) ve 12 numaralı girdiler dahil tüm arXiv girdileri
-`paper` sunucusundan alınan künyeyle doğrulanmıştır. DOI ve yayın yeri alanları arXiv
-üzerinde boştur; hakemli yayına dönüşen kaynaklar için tamamlanmalıdır.
+## 2.2 Çağrı grafiği
+
+8. Ammons, M., Bodden, M. ve Hendren, L. (2002). *A Test-Generation Framework for Automatic Refactoring of Dynamic Access-Control Policies*. — Klasik kaynak; künye doğrulanmadı.
+9. Bodden, M., Ammons, M. ve Hendren, L. (2010). *Reflection Analysis for Java*. — Klasik kaynak; künye doğrulanmadı.
+
+## 2.3 Gömme tabanlı kod araması
+
+10. Wu, C. ve Yan, M. (2022). *Learning Deep Semantic Model for Code Search using CodeSearchNet Corpus*. arXiv:2201.11313, 27.01.2022.
+11. Gu, J., Chen, Z. ve Monperrus, M. (2021). *Multimodal Representation for Neural Code Search*. arXiv:2107.00992, 02.07.2021.
+12. Zeng, C., Yu, Y., Li, S., Zhang, X. ve Yang, Z. (2021). *deGraphCS: Embedding Variable-based Flow Graph for Neural Code Search*. arXiv:2103.13020, 24.03.2021.
+13. Diera, A., Galke, L. ve Scherp, A. (2024). *Isotropy Matters: Soft-ZCA Whitening of Embeddings for Semantic Code Search*. arXiv:2411.17538, 26.11.2024.
+14. Jain, S., Dora, A. ve Sam, K. S. (2024). *LLM Agents Improve Semantic Code Search*. arXiv:2408.11058, 05.08.2024.
+15. Gandhi, S., Gao, L. ve Callan, J. (2025). *Repository-level Code Search with Neural Retrieval Methods*. arXiv:2502.07067, 10.02.2025.
+16. Le-Anh, M., Nguyen, H., Tran, K. A., Le Hai, N., Van Linh, N., Bui, N. D. Q. ve Le, B. (2026). *Do Not Treat Code as Natural Language: Implications for Repository-Level Code Generation and Beyond*. arXiv:2602.11671, 12.02.2026.
+17. Shah, P., Ghosh, R., Singhal, A. ve Dutta, D. (2025). *RANGER — Repository-Level Agent for Graph-Enhanced Retrieval*. arXiv:2509.25257, 27.09.2025.
+18. Veenendaal, A. ve Daly, E. (2016). *Code Definition Analysis for Call Graph Generation*. arXiv:1610.04594, 27.07.2016.
+
+## 2.4 Servis bağımlılık grafiği
+
+19. Neovius, M., Petre, L. ve Sere, K. (2016). *A Theory of Service Dependency*. arXiv:1606.02024, 07.06.2016.
+20. Landau, D., Blanken, G. ve Barbosa, J. (2025). *Retrofitting Service Dependency Discovery in Distributed Systems*. arXiv:2510.15490, 17.10.2025.
+
+## 2.5 Nedensel çıkarım ve kök neden analizi
+
+21. Zheng, Y., Huang, B. ve Chen, W. (2023). *Causal-learn: Causal Discovery in Python*. arXiv:2307.16405, 31.07.2023.
+22. Ferdous, M. H., Hossain, E. ve Gani, M. O. (2025). *TimeGraph: Synthetic Benchmark Datasets for Robust Time-Series Causal Discovery*. arXiv:2506.01361, 02.06.2025.
+23. Lin, C.-M., Chang, C. ve Wang, W.-Y. (2024). *Root Cause Analysis In Microservice Using Neural Granger Causal Discovery*. arXiv:2402.01140, 02.02.2024.
+24. Pham, L., Ha, H. ve Zhang, H. (2024). *BARO: Robust Root Cause Analysis for Microservices via Multivariate Bayesian Online Causal Inference*. arXiv:2405.09330, 15.05.2024.
+25. Pham, L., Ha, H. ve Zhang, H. (2024). *Root Cause Analysis for Microservice System based on Causal Inference: How Far Are We?* arXiv:2408.13729, 25.08.2024.
+26. Zhang, S., Fang, A. ve Yang, Y. (2025). *DynaCausal: Dynamic Causality-Aware Root Cause Analysis for Distributed Microservices*. arXiv:2510.22613, 26.10.2025.
+27. Wang, H., Wu, Z. ve Jiang, H. (2021). *Groot: An Event-graph-based Approach for Root Cause Analysis in Industrial Settings*. arXiv:2108.00344, 01.08.2021.
+28. Zhao, Z., Wang, Z., Zhang, T. vd. (2024). *CHASE: A Causal Hypergraph based Framework for Root Cause Analysis in Multimodal Microservice Systems*. arXiv:2406.19711, 28.06.2024.
+29. Xie, S., He, H. ve Wang, J. (2025). *Root Cause Analysis for Microservice Systems via Cascaded Conditional Learning*. arXiv:2511.17566, 14.11.2025.
+30. Zhang, L., Jia, T. ve Zhai, Y. (2026). *Hypothesize-Then-Verify: Speculative Root Cause Analysis for Microservices*. arXiv:2601.02736, 06.01.2026.
+31. Tang, P., Tang, S. ve Pu, H. (2025). *MicroRCA-Agent: Microservice Root Cause Analysis Method Based on Large Language Models*. arXiv:2509.15635, 19.09.2025.
+32. Li, A. vd. (2018). *MicroScope: Online Failure Diagnosis for Microservice Applications*. — Klasik kaynak; künye doğrulanmadı.
+33. Song, I. vd. (2014). *MicroRank: End-to-End Latency Issue Localization with Extended Spectrum Analysis in Microservice Environments*. — Klasik kaynak; künye doğrulanmadı.
+34. Bi, T., Jiang, X. ve Zhang, X. (2026). *JustDiag!: A Diagnostic Justification Engine for Accountable Root Cause Analysis*. arXiv:2606.19407, 17.06.2026.
+
+## 2.6 Dil modeli ajanları ve araç zincirleri
+
+35. Yao, S., Zhao, J., Yu, D. vd. (2022). *ReAct: Synergizing Reasoning and Acting in Language Models*. arXiv:2210.03629, 06.10.2022.
+36. Cui, S., Krishna, R., Jha, S. ve Iyer, R. K. (2025). *PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis*. arXiv:2512.22113, 26.12.2025.
+37. Xu, H., Li, C. ve Ma, X. (2026). *The Evolution of Tool Use in LLM Agents: From Single-Tool Call to Multi-Tool*. arXiv:2603.22862, 24.03.2026.
+38. Ehtesham, A., Singh, A., Gupta, G. K. ve Kumar, S. (2025). *A survey of agent interoperability protocols: Model Context Protocol (MCP), Agent Communication Protocol (ACP), Agent-to-Agent Protocol (A2A), and Agent Network Protocol (ANP)*. arXiv:2505.02279, 04.05.2025.
+39. Luo, Z. vd. (2025). *MCP-Universe: Benchmarking Large Language Models with Real-World Model Context Protocol Servers*. arXiv:2508.14704, 20.08.2025.
+40. Cho, M., Park, S., Jeong, K., Jeon, B., Choi, D. ve Han, J. (2026). *LLM within MCP Matters: Measuring Inefficient Resource Utilization Driven by LLMs*. arXiv:2608.08467, 09.08.2026.
+
+## 2.7 Diğer
+
+41. Batista, C. P. ve Conan, D. (2026). *Spanergy: Energy-aware Distributed Tracing for Microservices*. arXiv:2607.24902, 27.07.2026.
+42. OpenTelemetry. (t.y.). *OpenTelemetry Protocol Specification*. Erişim: 11.10.2026.
+43. Mimar Sinan Güzel Sanatlar Üniversitesi. (2017). *Tez/Eser Metni Yazım Kılavuzu*.
+44. Yükseköğretim Kurulu. (2024). *Yükseköğretimde Üretken Yapay Zekâ Kullanımına Dair Etik Rehber*.
+
+---
+
+**Gözlem.** Kaynakça 44 girdiden oluşmaktadır; bunların 37'si `paper` sunucusuyla
+doğrulanmış, 7'si metin içinde adı geçen klasik kaynaklardır (1, 2, 3, 8, 9, 32,
+33) ve künyeleri bu ortamda doğrulanamamıştır. Bu yedi girdi teslim öncesi elden
+kontrol edilmelidir.
 
 ---
 
