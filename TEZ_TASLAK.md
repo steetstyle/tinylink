@@ -1093,6 +1093,56 @@ okunmamıştı.
 **Tasarıma eklenen.** Migration dosyalarının, kapsam dışı bırakılma gerekçeleriyle birlikte
 okunması, kurulum adımına eklendi.
 
+### 3.7.5. Ölçülemeyen katmanın ölçülmüş gibi raporlanması
+
+Dört katmanlı zincirin üçüncüsü olan telemeti okuma katmanı, çalışma boyunca
+"bağlı" görünüyordu. Bu görünüm bir ölçümle yanlışlanmıştır.
+
+**Ölçülen.** Telemeti deposunda biriken 626.236 span incelendi. `exception_type`
+alanının dolu olduğu span sayısı **sıfırdı.** Alanı dolduran okuyucu doğru
+çalışıyordu, ancak alanı dolduracak olan kayıt hiçbir yerde yapılmıyordu. İstisna
+kaydı çağrısı kod tabanının hiçbir noktasından yapılmıyordu ve telemeti ara
+katmanında `try`/`finally` bulunmasına rağmen `catch` bulunmuyordu.
+
+**Düzeltilen.** İstisna, span'a `exception.type`, `exception.message` ve
+`exception.stacktrace` etiketleriyle yazılmakta ve span durumu hata olarak
+işaretlenmektedir. Düzeltme sonrası fonksiyonel koşuda **37 istisnalı span**
+kaydedilmiştir.
+
+**Doğrulama.** Söz konusu 37 span'ın **37'sinde** yol kimliği vardır (%100). Bu,
+kök neden aracının hata anını adlandırabilmesi için gereken önkoşulun sağlandığını
+gösterir. Aynı oran düzeltme öncesinde %0'dı.
+
+**Öğrenilen.** Bir katmanın "bağlı" görünmesi, o katmanın veri ürettiği anlamına
+gelmez. Depoda veri bulunması ile o verinin **doğru alanlara** yazılması ayrı
+iddialardır. İkincisi ancak alan bazında sayılarak doğrulanabilir.
+
+**Tasarıma eklenen.** Telemeti katmanının kabul ölçütü, "araç yanıt veriyor"
+değil, "hata üreten isteklerde istisna tipi dolu span üretiyor" olarak
+tanımlanmıştır. Bu ölçüt 4.6.3'te raporlanmaktadır.
+
+### 3.7.6. Başarı olarak raporlanan hiçbir şey
+
+Fonksiyonel test koşusunda ölçülen iki hata, doğrulama aracının kendisine ilişkindir.
+
+**Ölçülen — derleme başarısızlığı yeşil sayıldı.** İlk koşu 25 senaryo beklenirken
+**0 senaryo** yürüttü ve "geçti" bildirdi. Nedeni, hedefin derlenmemesiydi;
+derleme çıktısı farklı bir kullanıcıya ait önbellek dosyaları tarafından
+engelleniyordu.
+
+**Ölçülen — süreç durumu yanlış gösterildi.** API'leri kaldıran betik, süreç
+tanımlayıcı dosyasına yazamadığında hata veriyor, ardından tanımlayıcıyı diskteki
+eski dosyadan okuyordu. Bildirilen tanımlayıcı ölü bir sürece aitti; gerçek
+dinleyiciyle uyuşmuyordu. Kapatma komutu bu nedenle çalışan servisleri
+durduramıyordu.
+
+**Öğrenilen.** Bir doğrulama aracının kendisi hatalıysa, geçtiğini söylediği hiçbir
+test güvenilmez değildir. Sıfır senaryo yürütülmüş bir koşu "geçti" değil, "koşulmadı"
+dır. Bu ayrım raporlanmasaydı, 546 senaryoluk sonuç da güvenilmez olurdu.
+
+**Tasarıma eklenen.** Fonksiyonel test çıktısı yalnızca geçen senaryo sayısıyla
+değil, **yürütülen senaryo sayısıyla** birlikte raporlanmaktadır (Çizelge 4.6).
+
 ## 3.8. Tasarlanan mimarinin özeti
 
 ```
@@ -1341,11 +1391,12 @@ ve yorumu kendi yazacaktır.
 
 ## 5.2. Sınırın kendisi hakkında konuşulması gerekenler
 
-**Veri kümeleri tek servisli (4.6/S1).** Bu sınır, çalışmanın iki katmanını
-doğrulanamaz hâle getirmiştir. Yazarın tartışması şu soruya odaklanmalıdır: *bu eksiklik,
-elde edilen sonuçların geçerliliğini ne ölçüde etkiler?* Dört katmandan ikisi
-(istatistiksel analiz, sembol indeksi) bu sınırdan etkilenmez; iki katman (iz → kod, servis
-grafiği) etkilenir.
+**Veri kümeleri tek servisli (4.7/S1).** Bu sınır yalnızca servis bağımlılık
+grafiğini etkiler. Statik analiz, sembol indeksi, yol kataloğu ve hata–yol
+bağlantısı bu sınırdan etkilenmez ve ölçülmüştür. Yazarın tartışması şu soruya
+odaklanmalıdır: *kontrollü deneyle doğrulanmış bir katman, kendiliğinden oluşan veriyle
+de doğrulanmış sayılabilir mi?* Ölçülen cevap: kenar üretimi doğrudur, ancak kenar
+dağılımı üretimde farklı olabilir.
 
 **Gömme modeli seçimi.** Dört model karşılaştırılmıştır (hashing, nomic, jina, bge).
 Sonuç: en iyi model değişmiştir ama **en iyi model daha iyi bir sıralama vermedi**, yalnızca
@@ -1375,7 +1426,7 @@ Tez boyunca ölçümle desteklenen ve henüz yapılmamış işler:
 
 | Öneri | Dayanak |
 |---|---|
-| Çok servisli iz üreten yük testi | 4.6/S1 |
+| Çok servisli iz üreten yük testi | 4.7/S1 |
 | Genişletme gürültüsünün sayılması | 5.1/S4 |
 | Graf mesafesine dayalı puanlama kuralı | 4.6/S4 |
 | Her sunucuya "çalışmayı bırak" bütünlük testi | 3.7'nin üç olayı |
@@ -1390,7 +1441,7 @@ Tez boyunca ölçümle desteklenen ve henüz yapılmamış işler:
 
 ## 6.1. SONUÇUN DAYANMASI GEREKEN BULGULAR
 
-Bu tezin sonucu, aşağıdaki dört **ölçülmüş** bulguya dayanabilir. Bunların her biri
+Bu tezin sonucu, aşağıdaki yedi **ölçülmüş** bulguya dayanabilir. Bunların her biri
 4. bölümde ve EK-2'de yeniden üretilebilir biçimde kayıtlıdır:
 
 | # | Bulgu | Sayısal karşılığı |
@@ -1398,17 +1449,30 @@ Bu tezin sonucu, aşağıdaki dört **ölçülmüş** bulguya dayanabilir. Bunla
 | B1 | Katmanlar arası genişletme, yalnızca graf üzerinden ulaşılan metotlar üretir | `AddCreditCommandHandler` ilk 10 sonuçta yoktu |
 | B2 | Tip kullanım kenarı grafiğin kapsamını ölçülebilir biçimde genişletir | $I$: %25,7 → %6,5 |
 | B3 | Anlamsal aramanın isim/eylem eğilimi bir model kusuru değil, uzayın simetrikliğinin sonucudur | 5 sorgunun 3'ünde ilk sonuç tip |
-| B4 | Bir sistemin kendini doğru tanıtması, iş yapmasından daha zordur | 3 gözlem, 3 düzeltme |
+| B4 | Bir sistemin kendini doğru tanıtması, iş yapmasından daha zordur | 6 kırılma noktası (3.7) |
+| B5 | Yol kataloğu, iz ile kodu birbirine bağlayan son halkadır | 353 yol, 33.520 adım, 95 adım/yol |
+| B6 | Hata üreten isteklerde yol kapsaması eksiksizdir | 37 istisnalı span'ın 37'si yolludur (%100) |
+| B7 | Zincir uçtan uca çalışır | 9 alan, 546 senaryo, tamamı geçti |
 
 ## 6.2. Sonucun SÖZLEMEZLEMESİ GEREKEN NOKTALAR
 
-Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
+Yazarın sonucu **kaçınmaması** gereken dört nokta vardır:
 
-1. **Dört katmandan ikisi bu veriyle doğrulanamamıştır.** Sonuç, tüm zincirin
-   çalıştığını değil, *tasarımın ve ilk iki katmanın* çalıştığını söylemelidir.
-2. **Genişletme sıralamayı değiştirmez.** Katkı "aday kümesini genişletmektir",
-   "doğru sıralamaktır" değil.
-3. **Ölçüm tek projede yapılmıştır.** Genellenebilirlik iddiası, ikinci bir projede
+1. **Servis bağımlılık grafiği kendiliğinden oluşan veriyle doğrulanamamıştır.**
+   Ölçülen dağıtımda servisler birbirini çağırmamaktadır. Kenar üretimi, 4.6.4'te
+   açıkça belirtildiği gibi kontrollü deneyle doğrulanmıştır. Sonuç, bu katmanın
+   kendiliğinden oluşan trafikte çalıştığını söylememelidir.
+
+2. **Kök neden doğruluğu ölçülmemiştir.** 546 senaryo, aracın çalıştığını ve veri
+   zincirinin bütünlüğünü gösterir; bir olayın *doğru* kök neden olarak
+   adlandırıldığını göstermez. Doğruluk için işaretli bir olay kümesi gerekir ve
+   bu küme bu çalışmada oluşturulmamıştır. Tez, doğruluğu değil **tutarlılığı**
+   ölçmektedir.
+
+3. **Genişletme sıralamayı değiştirmez.** Katkı "aday kümesini genişletmektir",
+   "doğru sıralamaktır" değildir. Genişletilmiş adaylar listenin sonuna eklenir.
+
+4. **Ölçüm tek projede yapılmıştır.** Genellenebilirlik iddiası, ikinci bir projede
    doğrulanmadan kurulamaz.
 
 ---
