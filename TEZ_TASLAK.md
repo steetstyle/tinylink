@@ -1206,6 +1206,31 @@ değil, **yürütülen senaryo sayısıyla** birlikte raporlanmaktadır (Çizelg
 
 ## 4.1. Deney ortamı
 
+**Ölçümün zaman bağımlılığı.** Aşağıdaki sayılar, belirtilen tarihte çalışan
+sistemde alınmıştır. Statik analiz sayıları çalıştırıldığı anda yeniden
+üretilebilir; telemeti sayıları o koşunun ürettiği veri kümesine aittir ve o küme
+sonraki koşularla temizlenmektedir. İki tür sayı da **anlık görüntüdür**, sabit bir
+özellik değildir.
+
+| Ölçüm türü | Yeniden üretim | Geçerlilik |
+|---|---|---|
+| Sembol, sınıf, kenar sayıları | Çalıştırıldığı anda yeniden ölçülür | Kod değiştikçe kayar |
+| Telemeti span, yol, adım sayıları | O koşunun veri kümesine bağlıdır | Depo temizlenince kaybolur |
+| Fonksiyonel senaryo sonucu | `run-tests-per-api.sh test all` | Sürüm ve veriye bağlıdır |
+
+> **Doğrulanmış örnek — ölçüm kayması.** Deney ortamı tablosundaki statik
+> sayılar 1.362 dosya ve 2.538 sınıf olarak kaydedilmiştir. Bu çalışmanın
+> bitiminden sonra koda yeni dosyalar eklenmiştir; aynı komut şu anda
+> **1.368 dosya ve 2.546 sınıf** döndürmektedir. Bu bir tutarsızlık değil,
+> ölçümün zamanla bağlı olduğunun göstergesidir. Kayıtlı değerler, ölçümün
+> yapıldığı andaki durumu betimler ve değiştirilmemiştir.
+>
+> **Doğrulanmış örnek — kapsam kayması.** "Dokuz servisin dokuzu da telemeti
+> üretmektedir" sonucu, TestApp dahil dokuz servisin ayrı süreçlerde ayakta
+> olduğu bir koşuda alınmıştır. TestApp o koşudan sonra kapatılmıştır ve
+> telemeti deposunda 0 span barındırmaktadır. Sonuç, dokuz servisin dokuzunun
+> **üretebildiğini** gösterir; dokuzunun **aynı anda ürettiğini** göstermez.ney ortamı**
+
 **Çizelge 4.1 — Deney ortamı**
 
 | Bileşen | Değer |
@@ -1638,9 +1663,17 @@ teslim öncesi elden kontrol edilmelidir.
 tiny-pdg-cs embed <proje> --store <depo> --reset \
   --provider openai --model nomic-embed-text --base-url <url>
 
+# 4.141 ile 7.087 sembol arasındaki fark bu bayraktan gelir:
+# --include-tests verilmezse test kodu indekslenmez.
+tiny-pdg-cs embed <proje> --store <depo> --reset --include-tests \
+  --provider openai --model nomic-embed-text --base-url <url>
+
 # Anlamsal arama ve genişletme
 tiny-pdg-cs context "<sorgu>" --store <depo> \
   --provider openai --model nomic-embed-text
+
+# İndeksin içeriğini doğrulama
+tiny-pdg-cs embedinfo --store <depo>
 
 # Kaynak durumu (anlamsal kaynak çalıştı mı?)
 tiny-rca capabilities
