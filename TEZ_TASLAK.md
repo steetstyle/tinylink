@@ -84,7 +84,7 @@ içermektedir. İstisna taşıyan 37 span'ın **37'sinde** yol kimliği vardır 
 yanıtı veren 466 span'ın 465'i yola bağlıdır (%99,8). İz ile yol kataloğü arasındaki
 bağlantının hata üreten isteklerde tam olarak kurulduğu bu ölçümle gösterilmiştir.
 
-Son olarak, aynı veri kümesinde yalnızca 2 span 5xx durum kodu döndürmüş, buna
+Son olarak, aynı veri kümesinde yalnızca iki span 5xx durum kodu döndürmüş, buna
 karşılık 353 ayrı yol kataloglanmıştır. Yalın hata oranı iki olayı gösterir; yol
 kataloğu bu iki olayın geçtiği adımları ve bunların karşılık geldiği sınıf ve yöntemleri
 verir. Tezin ölçülebilir katkısı bu ayrımı ölçülebilir kılmaktır.
@@ -109,13 +109,14 @@ abstract above; the Turkish one is authoritative.*
 
 | Kısaltma | Açılım |
 |---|---|
+| API | Application Programming Interface |
+| CFG | Kontrol Akış Grafiği |
+| GSA | Gömleme Tabanlı Anlamsal Arama |
 | KNA | Kök Neden Analizi |
+| MCP | Model Context Protocol |
 | OTLP | OpenTelemetry Protocol |
 | PDG | Program Bağımlılık Grafiği |
 | SDG | Servis Bağımlılık Grafiği |
-| MCP | Model Context Protocol |
-| CFG | Kontrol Akış Grafiği |
-| GSA | Gömleme Tabanlı Anlamsal Arama |
 
 **Matematiksel Semboller**
 
@@ -678,7 +679,7 @@ karşılaştırır. Sayılar tek bir C# çözümünde, dokuz servisten gelen 187
 | Yol kataloğu + iz | 353 ayrı yol, 33.520 adım | İstisna üreten yol gerektirir |
 
 Tablodaki sayılar şu iddiayı ölçerek desteklemektedir: aynı veri kümesinde
-yalnızca **2 span** 5xx durum kodu döndürmüş, buna karşılık **353 ayrı yol**
+yalnızca **iki span** 5xx durum kodu döndürmüş, buna karşılık **353 ayrı yol**
 kataloglanmıştır. Hata oranı tek başına iki olayı göstermekte, yol kataloğu ise
 bu iki olayın hangi adımlardan geçtiğini ve o adımların hangi sınıf ve yönteme
 karşılık geldiğini vermektedir.
@@ -1566,20 +1567,25 @@ kontrol edilmelidir.
 
 | Sunucu | Araç sayısı | Konu |
 |---|---|---|
-| tiny_pdg_cs | 11 | Statik analiz, indeks, genişletme |
-| tinylink | 6 | Köprü, SDG, log deposu |
-| tiny_rca | 10 | Birleştirme, yöntem eşleme |
-| tinypraxis | 13 | Kısıtlı gezinti, aday seçimi |
+| tiny_pdg_cs | 11 | Statik analiz, sembol indeksi, genişletme |
+| tinylink | 6 | İz–kod köprüsü, SDG, log deposu |
+| tiny_rca | 10 | Katman birleştirme, yöntem eşleme, yetenek raporu |
+| tinypraxis | 13 | Kısıtlı gezinti, aday seçimi, rapor |
+| Telemetry.Mcp.Server | 12 | Telemeti sorgusu (yalnızca PostgreSQL) |
+| **Toplam** | **52** | |
 
 **EK-2 — Ölçümlerin yeniden üretimi**
 
 ```bash
-# Sembol indeksi ve graf
+# Sembol indeksi ve graf  (gömme modeli: nomic-embed-text, d = 768)
+# --provider, OpenTelemetry uyumlu bir gömme sunucusuna bağlanır;
+# sağlayıcı adı "openai" olsa da sunucu yerel olabilir.
 tiny-pdg-cs embed <proje> --store <depo> --reset \
-  --provider openai --model <model> --base-url <url>
+  --provider openai --model nomic-embed-text --base-url <url>
 
 # Anlamsal arama ve genişletme
-tiny-pdg-cs context "<sorgu>" --store <depo> --provider openai --model <model>
+tiny-pdg-cs context "<sorgu>" --store <depo> \
+  --provider openai --model nomic-embed-text
 
 # Kaynak durumu (anlamsal kaynak çalıştı mı?)
 tiny-rca capabilities
