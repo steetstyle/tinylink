@@ -97,9 +97,52 @@ mimari
 
 ## ABSTRACT
 
-*This section will be written by the author following MSGSÜ Guideline 5.5.5, which
-requires both Turkish and English abstract pages. Its content mirrors the Turkish
-abstract above; the Turkish one is authoritative.*
+An error message produced in a distributed system is rarely the event itself; it
+is a delayed view of something that happened earlier, in another service, or
+several services back. Root cause analysis is therefore not the problem of
+reading a log line. It is the question of under which condition, and in what
+order, the message was produced.
+
+This thesis designs a tool chain that separates root cause analysis into four
+distinct competencies, defines that design mathematically, and evaluates it
+experimentally. The chain consists of: (i) static analysis that indexes source
+code syntactically and semantically; (ii) a bridge that matches runtime traces
+to indexed code; (iii) a log store and telemetry database; and (iv) a bounded
+graph traversal whose termination is guaranteed by a queue, a budget, and a
+closed action space.
+
+The first principal finding is architectural: **layers that feed one another
+produce a broader candidate set than any layer can produce alone.** Semantic
+search on its own prioritises records that carry names over methods that carry
+actions. This is not a defect of the model; it follows directly from the
+symmetry of the embedding space, and is shown formally in this work. The remedy
+is to change the graph rather than the text: indexing the type-usage edge
+reduced the share of isolated symbols in the project from 25.7% to 6.5%.
+
+The second principal finding is methodological: **it is harder for a system to
+describe itself accurately than to work.** During the work, three separate
+layers appeared "successful" while having either never run or given up. One of
+them had produced 626,236 spans in which no exception type was populated at
+all, because nothing anywhere in the codebase recorded an exception. All three
+incidents are recorded as part of the design rather than omitted from it.
+
+The third principal finding is a measurable coverage. Each of nine domains was
+run as a separate process, and **all 546 functional scenarios passed.** Over the
+187,562 spans this run produced, the measured path catalog contains 353 distinct
+paths and 33,520 path steps. All 37 spans carrying an exception also carry a
+path id (100%); 465 of 466 error responses do (99.8%). This measurement shows
+that the link between the trace and the path catalog is fully established for
+requests that produce errors.
+
+Finally, over the same dataset only two spans returned a 5xx status code, while
+353 distinct paths were catalogued. A plain error rate reports two incidents;
+the path catalog reports the steps those two incidents went through and the
+classes and methods those steps correspond to. Making that distinction
+measurable is the thesis's contribution.
+
+**Keywords:** root cause analysis, observability, OpenTelemetry, static code
+analysis, program dependence graph, embedding-based semantic search, MCP,
+multi-layered architecture
 
 ---
 
@@ -1480,10 +1523,23 @@ Yazarın sonucu **kaçınmaması** gereken dört nokta vardır:
 
 # KAYNAKÇA
 
-> **Doğrulama notu.** Aşağıdaki arXiv girdilerinin künyeleri (yazar, yıl, başlık,
-> kimlik) `paper` sunucusundan **doğrulanmıştır**. DOI ve hakemli yayın yeri
-> alanları arXiv ön baskılarında bulunmadığı için boştur; teslimden önce
-> tamamlanmalıdır. Klasik literatür girdileri (Ferrate vd., Li vd. 2018 gibi)
+> **Doğrulama notu — okunmadan geçirilmemelidir.**
+>
+> 1. **arXiv girdileri (37 adet)** yazar, yıl, başlık ve kimlik bilgileriyle
+>    `paper` sunucusundan **doğrulanmıştır**. DOI ve hakemli yayın yeri alanları
+>    ön baskılarda bulunmadığı için boştur.
+>
+> 2. **Klasik girdiler (7 adet, 1, 2, 3, 9, 10, 32, 33)** bu ortamdan
+>    **doğrulanamamıştır.** Crossref, Semantic Scholar ve OpenAlex sorguları bu
+>    çalışmaları döndürmedi; tahmin edilen DOI adresleri 404 verdi. Bu yedi
+>    girdideki künye bilgileri yalnızca model bilgisine dayanmaktadır ve
+>    **danışman gözetiminde elden kontrol edilmelidir.** Bir DOI ya da sayfa
+>    aralığı bu metinde uydurulmamıştır; doğrulanamayan alan boş bırakılmıştır.
+>
+> 3. **Gömme modeli.** 4.1 ve 2.4.1'de belirtilen `nomic-embed-text` modeli,
+>    ölçüm anındaki indeks deposundan geri okunamamıştır (depo şu an boştur).
+>    Bu nedenle model adı, tezin kendi iddiasıyla tutarlı olmakla birlikte
+>    **yeniden doğrulanabilir bir kayıtla desteklenmemektedir.** Klasik literatür girdileri (Ferrate vd., Li vd. 2018 gibi)
 > metin içinde adı geçmekte, ancak künyeleri bu ortamda doğrulanamamıştır;
 > bunlar **danışman gözetiminde elden kontrol edilmelidir**.
 
@@ -1554,10 +1610,9 @@ Yazarın sonucu **kaçınmaması** gereken dört nokta vardır:
 
 ---
 
-**Gözlem.** Kaynakça 44 girdiden oluşmaktadır; bunların 37'si `paper` sunucusuyla
-doğrulanmış, 7'si metin içinde adı geçen klasik kaynaklardır (1, 2, 3, 8, 9, 32,
-33) ve künyeleri bu ortamda doğrulanamamıştır. Bu yedi girdi teslim öncesi elden
-kontrol edilmelidir.
+**Gözlem.** Kaynakça 44 girdiden oluşmaktadır; 37'si `paper` sunucusuyla
+doğrulanmış, 7'si klasik kaynaktır ve künyeleri doğrulanamamıştır. Bu yedi girdi
+teslim öncesi elden kontrol edilmelidir.
 
 ---
 
