@@ -73,8 +73,21 @@ düşürmüştür.
 
 Çalışmanın ikinci temel bulgusu yöntemseldir: **bir sistemin kendini doğru tanıtması,
 iş yapmasından daha zordur.** Çalışma sırasında üç ayrı katman, ya hiç çalışmamış ya da
-çalışmayı bırakmışken "başarılı" görünmüştür. Bu üç olay da tasarımın bir parçası
-olarak kayda geçirilmiştir.
+çalışmayı bırakmışken "başarılı" görünmüştür. Bunlardan biri, ölçülen 626.236 span'ın
+hiçbirinde istisna tipi bulunmamasıydı: istisna kaydı hiçbir yerde yapılmıyordu.
+Bu üç olay da tasarımın bir parçası olarak kayda geçirilmiştir.
+
+Çalışmanın üçüncü temel bulgusu ölçülebilir bir kapsamadır. Dokuz alanın her biri ayrı
+süreçte koşturulmuş, **546 fonksiyonel senaryonun tamamı geçmiştir**. Bu koşunun
+ürettiği 187.562 span üzerinde ölçülen yol kataloğu 353 ayrı yol ve 33.520 yol adımı
+içermektedir. İstisna taşıyan 37 span'ın **37'sinde** yol kimliği vardır (%100); hata
+yanıtı veren 466 span'ın 465'i yola bağlıdır (%99,8). İz ile yol kataloğü arasındaki
+bağlantının hata üreten isteklerde tam olarak kurulduğu bu ölçümle gösterilmiştir.
+
+Son olarak, aynı veri kümesinde yalnızca 2 span 5xx durum kodu döndürmüş, buna
+karşılık 353 ayrı yol kataloglanmıştır. Yalın hata oranı iki olayı gösterir; yol
+kataloğu bu iki olayın geçtiği adımları ve bunların karşılık geldiği sınıf ve yöntemleri
+verir. Tezin ölçülebilir katkısı bu ayrımı ölçülebilir kılmaktır.
 
 **Anahtar Kelimeler:** kök neden analizi, gözlemlenebilirlik, OpenTelemetry, statik kod
 analizi, program bağımlılık grafiği, gömme tabanlı anlamsal arama, MCP, çok katmanlı
@@ -121,8 +134,7 @@ abstract above; the Turkish one is authoritative.*
 
 ## ŞEKİL VE ÇİZELGE LİSTELERİ
 
-- Şekil 2.1 — Dört katmanlı zincirin veri akışı
-- Şekil 3.1 — Anlamsal arama ile graf genişletmesinin karşılaştırması
+- Şekil 3.1 — Dört katmanın veri akışı
 - Şekil 3.2 — Bir sembolün indekslenme ve genişletilme yolu
 - Çizelge 2.1 — Yaklaşımların aynı veri kümesindeki karşılaştırması
 - Çizelge 2.2 — Katmanların sorumluluk ayrımı
@@ -130,10 +142,11 @@ abstract above; the Turkish one is authoritative.*
 - Çizelge 4.1 — Deney ortamı
 - Çizelge 4.2 — Katman başına ölçülen durum
 - Çizelge 4.3 — Graf genişletmesinin beş sorgudaki etkisi
-- Çizelge 4.4 — Test sonuçlarının karşılaştırması
-- Çizelge 4.5 — Alan bazında fonksiyonel test sonucu
-- Çizelge 4.6 — Yol kataloğu ölçümleri
-- Çizelge 4.7 — Durum kodu, yol kapsaması ve istisna
+- Çizelge 4.4 — Metin içeriği kararlarının ölçülen etkisi
+- Çizelge 4.5 — Rapor doğruluğu düzeltmeleri ve ölçülen etkileri
+- Çizelge 4.6 — Alan bazında fonksiyonel test sonucu
+- Çizelge 4.7 — Yol kataloğu ölçümleri
+- Çizelge 4.8 — Durum kodu, yol kapsaması ve istisna
 
 ---
 
@@ -190,8 +203,14 @@ uygulanışında ortaya çıkan kırılma noktaları 3.2 ve 3.7 bölümlerindedi
 ## 1.6. Kapsam ve sınırlılık
 
 Çalışma, C# ile yazılmış mikroservisler ve OpenTelemetry biçiminde yayınlanan izler
-üzerinde yürütülmüştür. Servislerarası (çok servisli) iz üretimi bu çalışmanın veri
-kümelerinde bulunmamaktadır; bu sınırın deneysel sonuçlara etkisi 4.5'te ele alınmıştır.
+üzerinde yürütülmüştür. Değerlendirme tek bir çözüm üzerinde yapılmıştır; başka dil ve
+çözümlerde ölçüm yapılmamıştır.
+
+Ölçülen dağıtımda servisler ortak bir veritabanını paylaşmakta ve birbirlerini
+çağırmamaktadır; bu nedenle kendiliğinden oluşan izler tek servisli olmaktadır. Servis
+bağımlılık grafiğinin kenar üretimi, kontrollü bir deneyle üretilen çapraz servis
+izleri üzerinde doğrulanmıştır. Bu deney üretim verisi değildir ve sonuçların
+değerlendirilmesinde böyle ayrılmıştır. Ayrıntı için bkz. Bölüm 4.6.4.
 
 ## 1.7. Tezin yapısı
 
@@ -644,6 +663,37 @@ dayandırıldığı için eğitim verisi gerektirmez ve her adımı gerekçelend
 Tezin somut ölçümleri, bu konumun deneysel karşılığıdır ve Bölüm 4'te
 sunulmuştur.
 
+**Çizelge 2.1 — Yaklaşımların aynı veri kümesindeki karşılaştırması**
+
+Aşağıdaki tablo beş yaklaşımın aynı gerçek trafik üzerinde verdiği yanıtı
+karşılaştırır. Sayılar tek bir C# çözümünde, dokuz servisten gelen 187.562 span
+üzerinde ölçülmüştür (Bkz. Bölüm 4.6).
+
+| Yaklaşım | Ölçülen yanıt | Yanıtın sınırı |
+|---|---|---|
+| Log taraması | 187.562 olay metni | Kök nedeni göstermez, yalnızca belirti verir |
+| İz tek başına | 187.562 span, süre ve düzen | Hatanın *kodda* yerini vermez |
+| Yalın hata oranı | 466 hata yanıtı | Hangi yolun bozulduğunu söylemez |
+| Servis bağımlılık grafiği | Kenar sayımı doğrulandı | Bu dağıtımda servisler birbirini çağırmıyor |
+| Yol kataloğu + iz | 353 ayrı yol, 33.520 adım | İstisna üreten yol gerektirir |
+
+Tablodaki sayılar şu iddiayı ölçerek desteklemektedir: aynı veri kümesinde
+yalnızca **2 span** 5xx durum kodu döndürmüş, buna karşılık **353 ayrı yol**
+kataloglanmıştır. Hata oranı tek başına iki olayı göstermekte, yol kataloğu ise
+bu iki olayın hangi adımlardan geçtiğini ve o adımların hangi sınıf ve yönteme
+karşılık geldiğini vermektedir.
+
+**Çizelge 2.2 — Katmanların sorumluluk ayrımı**
+
+| Yetenek | tiny-pdg-cs | tinylink | tiny-rca | tinypraxis |
+|---|---|---|---|---|
+| Statik sembol bulma | 4.141 sembol | — | — | — |
+| Çağrı grafiği | 14.166 kenar | — | — | — |
+| Servis bağımlılık grafiği | — | var | — | var |
+| Hata anını yola bağlama | — | var | var | var |
+| Kök neden gezintisi | — | — | — | 4 aşama |
+| Dil kapsamı | C# | C# + OTel | C# + OTel | çok dilli |
+
 ---
 
 # 3. MİMARİ TASARIM
@@ -672,7 +722,7 @@ sorumluluğu 3.6'da ayrı bir başlık olarak ele alınmıştır.
 birleşik cevap adayları listeler ama **seçmez**. Bir liste, bir kök neden değildir.
 Seçimin ayrı bir katman olarak ayrılmasının nedeni, seçimin kendi kısıtlarının olmasıdır.
 
-**Şekil 2.1'in metinsel karşılığı — veri akışı:**
+**Şekil 3.1 — Dört katmanın veri akışı:**
 
 ```
 İstek  →  İz (OTLP)  ─────────────────┐
@@ -760,18 +810,24 @@ eşleşir. Bu nedenle test kodu varsayılan olarak indekslenmez.
 
 Her sembol için üç bağımsız kaynak sorgulanır:
 
-$$\mathcal{R}(c_i) = \{ r \in \{\text{açık}, \text{sözcüksel}, \text{anlamsal}\} \}$$
+$$
+\mathcal{R}(c_i) = \{ r \in \{\text{açık}, \text{sözcüksel}, \text{anlamsal}\} \}
+\tag{3.1}$$
 
 **Açık eşleşme:**
 
-$$\text{açık}(c_i) \iff \mathrm{alt}(d_i) \subseteq \mathrm{alt}(q)$$
+$$
+\text{açık}(c_i) \iff \mathrm{alt}(d_i) \subseteq \mathrm{alt}(q)
+\tag{3.2}$$
 
 burada $\mathrm{alt}(\cdot)$ küçük harfe indirgemedir. Sorgu, sembolün *kendi adını*
 anlatıyorsa eşleşme vardır.
 
 **Sözcüksel eşleşme:**
 
-$$\text{sözcüksel}(c_i) \iff \left| T(q) \cap T(\tau_i) \right| > 0$$
+$$
+\text{sözcüksel}(c_i) \iff \left| T(q) \cap T(\tau_i) \right| > 0
+\tag{3.3}$$
 
 burada $T(\cdot)$ token çıkarımıdır ve camelCase bölme uygular.
 
@@ -786,7 +842,9 @@ bulamadı" bilgisi. Bir cevabın güvenilirliği, kaynakların birbirini doğrul
 
 **Sıralama.** Kaynaklar güçlülüğe göre sıralanır ve liste bu sırayı okur:
 
-$$\text{sıra}(\text{açık}) = 3 > \text{sıra}(\text{sözcüksel}) = 2 > \text{sıra}(\text{anlamsal}) = 1 > \text{sıra}(\text{genişletilmiş}) = 0$$
+$$
+\text{sıra}(\text{açık}) = 3 > \text{sıra}(\text{sözcüksel}) = 2 > \text{sıra}(\text{anlamsal}) = 1 > \text{sıra}(\text{genişletilmiş}) = 0
+\tag{3.4}$$
 
 Genişletilmiş adaylar sıfır alır: çünkü onlar sorguyla **hiç karşılaştırılmamıştır.**
 
@@ -794,7 +852,9 @@ Genişletilmiş adaylar sıfır alır: çünkü onlar sorguyla **hiç karşıla�
 
 Kod grafiği:
 
-$$\mathcal{G} = (V, E), \quad V = \mathcal{C} \cup \mathcal{T}, \quad E = \mathcal{D} \cup \mathcal{K} \cup \mathcal{R}$$
+$$
+\mathcal{G} = (V, E), \quad V = \mathcal{C} \cup \mathcal{T}, \quad E = \mathcal{D} \cup \mathcal{K} \cup \mathcal{R}
+\tag{3.5}$$
 
 | Küme | İlişki | Anlamı |
 |---|---|---|
@@ -804,7 +864,9 @@ $$\mathcal{G} = (V, E), \quad V = \mathcal{C} \cup \mathcal{T}, \quad E = \mathc
 
 **Bir adım komşuluk kümesi:**
 
-$$\mathcal{N}_1(v) = \{ w \in V \;:\; (v, w) \in E \;\lor\; (w, v) \in E \}$$
+$$
+\mathcal{N}_1(v) = \{ w \in V \;:\; (v, w) \in E \;\lor\; (w, v) \in E \}
+\tag{3.6}$$
 
 İki yön birleştirilir, çünkü "bu kaydı kim kullanıyor" sorusu, "bu kayıt kimi kullanıyor"
 sorusu kadar önemlidir.
@@ -817,26 +879,34 @@ $\deg(v) = |\mathcal{N}_1(v)|$. Bu oran, grafiğin ne kadar bilgi taşıdığın
 
 ### 3.3.4. Genişletme
 
-$$\mathcal{E}_1(c) = \{ w \in \mathcal{N}_1(c) \;:\; w \notin \mathcal{R}_{\text{bulunan}} \}$$
+$$
+\mathcal{E}_1(c) = \{ w \in \mathcal{N}_1(c) \;:\; w \notin \mathcal{R}_{\text{bulunan}} \}
+\tag{3.7}$$
 
 Genişletme yalnızca **hiçbir kaynak tarafından bulunmamış** sembolleri ekler. Zaten
 bulunmuş bir adayı yeniden eklemek bilgi değildir.
 
 **Sınırlar:**
 
-$$\left| \text{tohum} \right| \leq 3, \qquad \left| \mathcal{E}_1 \right| \leq 5$$
+$$
+\left| \text{tohum} \right| \leq 3, \qquad \left| \mathcal{E}_1 \right| \leq 5
+\tag{3.8}$$
 
 Sınırlar keyfî değildir: üç tohum ve beş sonuç, listenin faydalı olmaktan çıktığı nokta
 ölçülerek belirlenmiştir.
 
 **Çıktının sıralamadaki yeri.** Genişletilmiş adaylar listenin **sonuna eklenir**;
-mevcut sıralamayı değiştirmezler. Bu, 4.6'daki sınırlılığın nedenidir.
+mevcut sıralamayı değiştirmezler. Bu, 4.7'deki sınırlılığın nedenidir.
 
 ### 3.3.5. Güven ölçütü
 
-$$\text{güven} = \begin{cases} \text{yüksek} & |\mathcal{R}_{\text{bulunan}}| \geq 2 \\ \text{düşük} & \text{ aksi halde} \end{cases}$$
+$$
+\text{güven} = \begin{cases} \text{yüksek} & |\mathcal{R}_{\text{bulunan}}| \geq 2 \\ \text{düşük} & \text{ aksi halde} \end{cases}
+\tag{3.9}$$
 
-$$\text{doğrulanan} = \left| \{ c \in \mathcal{C} : |\mathcal{R}(c)| \geq 2 \} \right|$$
+$$
+\text{doğrulanan} = \left| \{ c \in \mathcal{C} : |\mathcal{R}(c)| \geq 2 \} \right|
+\tag{3.10}$$
 
 Bu tanım, **kaç kaynağın bulduğunu** ölçer. Doğrulamanın yokluğu "bu bir tahmindir"
 demektir.
@@ -847,7 +917,9 @@ demektir.
 
 Her $c_i$ için indekslenen metin, 2.3.1'deki $\phi$'nin girdisidir:
 
-$$\Phi(c_i) = d_i \;\Vert\; f_i \;\Vert\; \tau_i \;\Vert\; \Gamma_i$$
+$$
+\Phi(c_i) = d_i \;\Vert\; f_i \;\Vert\; \tau_i \;\Vert\; \Gamma_i
+\tag{3.11}$$
 
 $\Vert$ birleştirme işlemini, $d_i$ sembol kimliğini, $f_i$ dosya yolunu, $\tau_i$ imzayı,
 $\Gamma_i$ çağrı kümesini temsil eder.
@@ -862,6 +934,28 @@ bilgi taşımaz ve yalnızca modelin okuması gereken token harcar. Tıklayınca
 Ölçülen veri kümesinde arama sonuçlarının dörtte üçü isim taşıyan tiplerdir (bkz.
 2.3.2). Bu sonuç, $\sigma$ fonksiyonunun bir eğilimini yansıtır ve 3.5'teki grafiğin
 var olma gerekçesidir.
+
+**Şekil 3.2 — Bir sembolün indekslenme ve genişletilme yolu**
+
+```
+  Kod öğesi c_i
+        │
+        ├─→ Φ(c_i) = d_i ‖ f_i ‖ τ_i ‖ Γ_i       (indeksleme metni)
+        │        │
+        │        └─→ f(Φ(c_i)) ∈ ℝ^768           (gömme)
+        │
+  Sorgu q ──→ sim(q, c) = cos θ                  (2.9)
+        │        │
+        │        └─→ sim ≥ τ ise C(q)'e ekle     (2.10)
+        │
+        └─→ Expand(C(q)) = C(q) ∪ N⁺ ∪ N⁻         (2.11)
+                 │
+                 ├─→ N⁺: c'nin çağırdığı semboller
+                 └─→ N⁻: c'yi çağıran semboller
+```
+
+Genişletme, anlamsal eşleşmeyi yapısal erişilebilirlikle birleştiren tek
+adımdır. Ölçülen etkisi Bölüm 4.3'te verilmiştir.
 
 ## 3.5. Tip kullanım grafiği: çözümün tanımı
 
@@ -887,7 +981,9 @@ tahsis. İkisi de $\mathcal{R}$ ilişkisindendir.
 
 $\mathcal{R}$ kümesinin iki kaynaktan kurulması:
 
-$$\mathcal{R}_1 = \{ (\kappa(c_i), T) : T \in \text{uygulanan tip adları} \} \cup \{ (\kappa(c_i), \text{konstrüktör}, \tau) : \tau \in \mathcal{C}_{\text{konstrüktör}} \}$$
+$$
+\mathcal{R}_1 = \{ (\kappa(c_i), T) : T \in \text{uygulanan tip adları} \} \cup \{ (\kappa(c_i), \text{konstrüktör}, \tau) : \tau \in \mathcal{C}_{\text{konstrüktör}} \}
+\tag{3.12}$$
 
 burada $\kappa(c_i)$, $c_i$'nin içinde bulunduğu tipi; $T$ ise alan tipinin içinden
 çıkarılan **çıplak** tip adını gösterir.
@@ -919,7 +1015,9 @@ Burada yalnızca tanımları verilir.
 
 **Tanım — kaynak durumu.** Her kaynağın bir durumu olmalıdır:
 
-$$\text{durum}(r) \in \{\text{çalıştı},\; \text{çalışmadı: } neden\}$$
+$$
+\text{durum}(r) \in \{\text{çalıştı},\; \text{çalışmadı: } neden\}
+\tag{3.13}$$
 
 Bir cevap, hangi kaynakların çalıştığını açıkça bildirmelidir. Aksi hâlde "iki kaynak
 anlaştı" ifadesi, üçüncü kaynağın hiç sorulmadığı bir durumu da kapsar.
@@ -1075,6 +1173,8 @@ graf üzerinden ulaşılmıştır.
 
 ## 4.4. Metin içeriği kararlarının etkisi
 
+**Çizelge 4.4 — Metin içeriği kararlarının ölçülen etkisi**
+
 | Karar | Ölçüm | Sonuç |
 |---|---|---|
 | Kurucu metotlar indekslenmesin | 494 → 0 kurucu sembolü | İlk 12 sonucun 3'ü kurucuydu; kaldırıldı |
@@ -1083,6 +1183,8 @@ graf üzerinden ulaşılmıştır.
 ## 4.5. Rapor doğruluğu ölçümleri
 
 Üç gözlem ve düzeltmeleri:
+
+**Çizelge 4.5 — Rapor doğruluğu düzeltmeleri ve ölçülen etkileri**
 
 | Gözlem | Ölçülen hata | Düzeltme sonrası |
 |---|---|---|
@@ -1104,7 +1206,7 @@ Veritabanı kapalı:      isError: true  "cannot reach the telemetry database."
 Dokuz alanın her biri ayrı süreçte, kendi veritabanı ve kendi bağlantı noktasıyla
 çalıştırıldı. Alanlar arası izolasyon çalışma zamanında ölçülmüştür.
 
-**Çizelge 4.5 — Alan bazında fonksiyonel test sonucu**
+**Çizelge 4.6 — Alan bazında fonksiyonel test sonucu**
 
 | Alan | Senaryo | Sonuç |
 |---|---|---|
@@ -1127,7 +1229,7 @@ derlenmemesi ve dolayısıyla hiç senaryo yürütülmemesidir. Sıfır senaryol
 
 Fonksiyonel koşu gerçek trafik ürettiği için telemeti deposu sıfırdan doldurulmuştur.
 
-**Çizelge 4.6 — Yol kataloğu ölçümleri**
+**Çizelge 4.7 — Yol kataloğu ölçümleri**
 
 | Ölçüt | Değer |
 |---|---|
@@ -1146,7 +1248,7 @@ Billing.API'de (%26,3), en düşük oran Analytics.API'de (%4,3) ölçülmüşt�
 Kök neden sorgusu bir span'ı ancak yol kimliği taşıyorsa adlandırabilir. Bu
 bağlantının kapsaması ölçülmüştür.
 
-**Çizelge 4.7 — Durum kodu, yol kapsaması ve istisna**
+**Çizelge 4.8 — Durum kodu, yol kapsaması ve istisna**
 
 | Durum kodu | Span | Yollu | İstisna |
 |---|---|---|---|
@@ -1160,6 +1262,36 @@ bağlantının kapsaması ölçülmüştür.
 İstisna taşıyan span'ların 37'sinin 37'sinde yol kimliği vardır (%100). Hata yanıtı
 veren 466 span'ın 465'i yola bağlıdır (%99,8). Bu, iz ile yol kataloğü arasındaki
 bağlantının hata üreten isteklerde tam olarak kurulduğunu göstermektedir.
+
+### 4.6.4. Servis bağımlılık grafiğinin kontrollü deneyle doğrulanması
+
+Ölçülen dağıtımda servisler ortak bir veritabanını paylaşmakta ve birbirlerini
+çağırmamaktadır. Bu nedenle kendiliğinden oluşan izlerde her kayıt tek servisli
+kalmaktadır ve servis bağımlılık grafiğinin kenar üretimi kendiliğinden
+gözlemlenemez.
+
+Bu nedenle kenar üretimi **kontrollü bir deneyle** doğrulanmıştır. Deneyde iki
+çalışan servis arasına `traceparent` başlığı ile gerçek bir istek gönderilmiş, iz
+üzerinde istemci ve sunucu span çifti oluşturulmuş ve kuralın (2.13) uygulanıp
+uygulanmadığı ölçülmüştür.
+
+| Durum | Kural (2.13) | Ölçülen sonuç |
+|---|---|---|
+| Kural uygulanmadan | eşleşme yok | Tüm kenarlar boş kaldı |
+| Kural uygulandıktan sonra | istemci–sunucu çifti | `Agency.API → Billing.API` kenarı oluştu |
+
+Bu bulgu, 2.5.2'de ileri sürülen kuralın deneysel karşılığıdır: iki span aynı izde
+bulunsa bile kardeş ise kenar üretilmez; kenar ancak istemci–sunucu çifti
+oluştuğunda üretilir.
+
+Aynı deney kapsamında kök neden gezintisi de yürütülmüştür. `praxis_begin`,
+`praxis_select` ve `praxis_next` adımları üç turda tamamlanmış, kuyruğun boş
+olmadığı ve kapatma koşulunun (2.16) gezinti bitmeden sağlanmadığı gözlenmiştir.
+
+> **Bu deney üretim verisi değildir.** İzler bilinçli olarak oluşturulmuştur.
+> Sonuçların değerlendirilmesinde bu ayrım korunmuş, deney ayrı bir başlıkta
+> ayrılmıştır. Kontrolsüz dağıtımda gözlenen tekil servis oranı 1,00'dir
+> (bkz. Bölüm 4.7).
 
 ## 4.7. Sınırlılıklar
 
@@ -1205,7 +1337,7 @@ ve yorumu kendi yazacaktır.
 | S2 | Simetriklik gözlemi genellenebilir mi, yoksa bu veri kümesine mi özgü mü? | 5 sorgu / 1 proje / 1 model. Tek örneklem |
 | S3 | Tip kullanım kenarı başka projelerde de işe yarar mı? | Ölçülmedi — **ölçülmeli** |
 | S4 | Genişletme ile eklenen gürültü ne oranda? | Gözlemlendi ama sayılmadı — **sayılmalı** |
-| S5 | Sıralamayı değiştirmeyen genişletme (S2) bir eksiklik mi, özellik mi? | 4.6'da sınır olarak kayıtlı |
+| S5 | Sıralamayı değiştirmeyen genişletme (S2) bir eksiklik mi, özellik mi? | 4.7'de sınır olarak kayıtlı |
 
 ## 5.2. Sınırın kendisi hakkında konuşulması gerekenler
 
@@ -1232,7 +1364,7 @@ ve hangisinin savunulabileceği veriye göre değişir:
 
 1. **Kavramsal katkı:** Simetriklik gözlemi (2.3.2), gömme tabanlı kod araması
    tasarımları için genel bir sınır koyar.
-2. **Tasarım katkısı:** Rapor dürüstlüğü (3.6) ve kaynak durumu kavramı, araç zincirleri
+2. **Tasarım katkısı:** Rapor dürüstlüğü (Bölüm 3.6) ve kaynak durumu kavramı, araç zincirleri
    için bir sözleşme önerir.
 3. **Ölçümsel katkı:** Genişletmenin ölçülen etkisi (4.3) ve yalıtılmışlık oranının
    %25,7'den %6,5'e düşmesi.
@@ -1290,7 +1422,7 @@ Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
 > metin içinde adı geçmekte, ancak künyeleri bu ortamda doğrulanamamıştır;
 > bunlar **danışman gözetiminde elden kontrol edilmelidir**.
 
-## 2.1 Program bağımlılık grafiği
+### Program bağımlılık grafiği
 
 1. Ferrate, J., Ottenstein, T. ve Warren, J. (1988). *The Program Dependence Graph and Its Use in Automatic Software Deduction*. — Klasik kaynak; künye doğrulanmadı.
 2. Weiss, D. J. (1991). *Program Dependence Graphs for the Detection of Harmful Interference*. — Klasik kaynak; künye doğrulanmadı.
@@ -1300,12 +1432,12 @@ Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
 6. Zhang, Y., Li, G. ve Jin, Z. (2023). *Neural Program Repair with Program Dependence Analysis and Effective Filter*. arXiv:2305.09315, 16.05.2023.
 7. Yan, Y., Cooper, N. ve Moran, K. (2026). *Enhancing Code Understanding for Impact Analysis by Combining Transformers*. arXiv:2607.23355, 25.07.2026.
 
-## 2.2 Çağrı grafiği
+### Çağrı grafiği
 
 8. Ammons, M., Bodden, M. ve Hendren, L. (2002). *A Test-Generation Framework for Automatic Refactoring of Dynamic Access-Control Policies*. — Klasik kaynak; künye doğrulanmadı.
 9. Bodden, M., Ammons, M. ve Hendren, L. (2010). *Reflection Analysis for Java*. — Klasik kaynak; künye doğrulanmadı.
 
-## 2.3 Gömme tabanlı kod araması
+### Gömme tabanlı kod araması
 
 10. Wu, C. ve Yan, M. (2022). *Learning Deep Semantic Model for Code Search using CodeSearchNet Corpus*. arXiv:2201.11313, 27.01.2022.
 11. Gu, J., Chen, Z. ve Monperrus, M. (2021). *Multimodal Representation for Neural Code Search*. arXiv:2107.00992, 02.07.2021.
@@ -1317,12 +1449,12 @@ Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
 17. Shah, P., Ghosh, R., Singhal, A. ve Dutta, D. (2025). *RANGER — Repository-Level Agent for Graph-Enhanced Retrieval*. arXiv:2509.25257, 27.09.2025.
 18. Veenendaal, A. ve Daly, E. (2016). *Code Definition Analysis for Call Graph Generation*. arXiv:1610.04594, 27.07.2016.
 
-## 2.4 Servis bağımlılık grafiği
+### Servis bağımlılık grafiği
 
 19. Neovius, M., Petre, L. ve Sere, K. (2016). *A Theory of Service Dependency*. arXiv:1606.02024, 07.06.2016.
 20. Landau, D., Blanken, G. ve Barbosa, J. (2025). *Retrofitting Service Dependency Discovery in Distributed Systems*. arXiv:2510.15490, 17.10.2025.
 
-## 2.5 Nedensel çıkarım ve kök neden analizi
+### Nedensel çıkarım ve kök neden analizi
 
 21. Zheng, Y., Huang, B. ve Chen, W. (2023). *Causal-learn: Causal Discovery in Python*. arXiv:2307.16405, 31.07.2023.
 22. Ferdous, M. H., Hossain, E. ve Gani, M. O. (2025). *TimeGraph: Synthetic Benchmark Datasets for Robust Time-Series Causal Discovery*. arXiv:2506.01361, 02.06.2025.
@@ -1339,7 +1471,7 @@ Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
 33. Song, I. vd. (2014). *MicroRank: End-to-End Latency Issue Localization with Extended Spectrum Analysis in Microservice Environments*. — Klasik kaynak; künye doğrulanmadı.
 34. Bi, T., Jiang, X. ve Zhang, X. (2026). *JustDiag!: A Diagnostic Justification Engine for Accountable Root Cause Analysis*. arXiv:2606.19407, 17.06.2026.
 
-## 2.6 Dil modeli ajanları ve araç zincirleri
+### Dil modeli ajanları ve araç zincirleri
 
 35. Yao, S., Zhao, J., Yu, D. vd. (2022). *ReAct: Synergizing Reasoning and Acting in Language Models*. arXiv:2210.03629, 06.10.2022.
 36. Cui, S., Krishna, R., Jha, S. ve Iyer, R. K. (2025). *PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis*. arXiv:2512.22113, 26.12.2025.
@@ -1348,7 +1480,7 @@ Yazarın sonucu **kaçınmaması** gereken üç nokta vardır:
 39. Luo, Z. vd. (2025). *MCP-Universe: Benchmarking Large Language Models with Real-World Model Context Protocol Servers*. arXiv:2508.14704, 20.08.2025.
 40. Cho, M., Park, S., Jeong, K., Jeon, B., Choi, D. ve Han, J. (2026). *LLM within MCP Matters: Measuring Inefficient Resource Utilization Driven by LLMs*. arXiv:2608.08467, 09.08.2026.
 
-## 2.7 Diğer
+### Diğer
 
 41. Batista, C. P. ve Conan, D. (2026). *Spanergy: Energy-aware Distributed Tracing for Microservices*. arXiv:2607.24902, 27.07.2026.
 42. OpenTelemetry. (t.y.). *OpenTelemetry Protocol Specification*. Erişim: 11.10.2026.
